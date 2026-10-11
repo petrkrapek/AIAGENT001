@@ -84,6 +84,7 @@ def auto_approver(name: str, tool_input: dict[str, Any]) -> bool:
 
 HELP = """Příkazy:
   /help    nápověda
+  /leads   přehled leadů (potenciálních zákazníků)
   /tools   seznam nástrojů
   /tasks   otevřené úkoly
   /reset   začít novou konverzaci
@@ -91,8 +92,13 @@ HELP = """Příkazy:
 
 
 def chat(agent: Agent) -> None:
-    print(bold(f"AI agent {__version__}") + dim(f"  ·  model {agent.config.model}  ·  /help"))
+    print(bold(f"AI obchodník {__version__}") + dim(f"  ·  model {agent.config.model}  ·  /help"))
     print(dim(f"Pracovní adresář: {agent.config.workspace}"))
+    if agent.config.load_profile() is None:
+        print(yellow(f"! Chybí profil firmy ({agent.config.profile_path.name}). "
+                     "Zkopírujte profil.example.md jako profil.md a vyplňte ho."))
+    if "send_email" not in agent.registry:
+        print(dim("Odesílání e-mailů není nastavené (SMTP): agent připraví jen návrhy."))
     while True:
         try:
             user_input = input(bold("\nvy › ")).strip()
@@ -112,10 +118,14 @@ def chat(agent: Agent) -> None:
             continue
         if user_input == "/tools":
             for tool in agent.registry.tools:
-                mark = " (schválení)" if tool.needs_approval else ""
+                mark = {True: " (schválení)", False: ""}.get(tool.needs_approval, " (schválení u ne-GET)")
                 print(f"  {tool.name}{dim(mark)}")
             for tool in agent.registry.server_tools:
                 print(f"  {tool['name']}{dim(' (server)')}")
+            continue
+        if user_input == "/leads":
+            list_leads = agent.registry.get("list_leads")
+            print(list_leads.handler() if list_leads else "Databáze leadů není dostupná.")
             continue
         if user_input == "/tasks":
             list_tasks = agent.registry.get("list_tasks")
@@ -153,7 +163,7 @@ def run_safely(agent: Agent, task: str) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="aiagent", description="Osobní AI agent pro automatizaci úkolů.")
+    parser = argparse.ArgumentParser(prog="aiagent", description="AI obchodník: hledá potenciální zákazníky a píše jim nabídky.")
     parser.add_argument("--version", action="version", version=f"aiagent {__version__}")
     parser.add_argument("--model", help="model Claude (výchozí z AIAGENT_MODEL)")
     parser.add_argument("--effort", choices=EFFORT_LEVELS, help="hloubka uvažování")

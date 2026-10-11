@@ -16,8 +16,8 @@ METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 def server_tools() -> list[dict[str, Any]]:
     # Run on Anthropic's infrastructure; results come back in the same response.
     return [
-        {"type": "web_search_20260209", "name": "web_search", "max_uses": 5},
-        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5},
+        {"type": "web_search_20260209", "name": "web_search", "max_uses": 10},
+        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 10},
     ]
 
 

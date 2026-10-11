@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aiagent"
 version = "0.1.0"
-description = "Osobní AI agent pro automatizaci úkolů postavený na Claude API"
+description = "AI obchodník: vyhledává potenciální zákazníky a píše jim nabídky spolupráce (Claude API)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

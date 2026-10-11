@@ -4,15 +4,17 @@ from aiagent.config import SmtpConfig
 from aiagent.tools import ToolError, build_registry
 
 
-def call(registry, name, **kwargs):
-    return registry.get(name).handler(**kwargs)
+def call(registry, tool, **kwargs):
+    return registry.get(tool).handler(**kwargs)
 
 
 def test_registry_contents(config):
     registry = build_registry(config)
     names = {tool.name for tool in registry.tools}
     assert {"get_current_time", "list_files", "read_file", "write_file", "run_command",
-            "add_task", "list_tasks", "update_task", "http_request"} <= names
+            "add_task", "list_tasks", "update_task", "http_request", "ares_search",
+            "ares_company", "save_lead", "list_leads", "get_lead", "update_lead",
+            "save_draft", "export_leads"} <= names
     assert "send_email" not in names  # SMTP not configured
     assert registry.server_tools == []
 

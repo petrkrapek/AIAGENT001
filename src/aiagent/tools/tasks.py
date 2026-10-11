@@ -2,35 +2,13 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from ..config import Config
+from ..storage import JsonStore, now_iso as _now
 from . import Tool, ToolError, schema
 
 STATUSES = ("todo", "in_progress", "done", "cancelled")
-
-
-class TaskStore:
-    def __init__(self, path: Path):
-        self.path = path
-
-    def load(self) -> list[dict[str, Any]]:
-        if not self.path.exists():
-            return []
-        return json.loads(self.path.read_text(encoding="utf-8"))
-
-    def save(self, tasks: list[dict[str, Any]]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _format(task: dict[str, Any]) -> str:
@@ -43,12 +21,12 @@ def _format(task: dict[str, Any]) -> str:
 
 
 def build(config: Config) -> list[Tool]:
-    store = TaskStore(config.workspace / ".aiagent" / "tasks.json")
+    store = JsonStore(config.workspace / ".aiagent" / "tasks.json")
 
     def add_task(title: str, due: str | None = None, notes: str | None = None) -> str:
         tasks = store.load()
         task = {
-            "id": max((t["id"] for t in tasks), default=0) + 1,
+            "id": store.next_id(tasks),
             "title": title,
             "status": "todo",
             "due": due,

@@ -36,7 +36,16 @@ class Config:
     timezone: str = "Europe/Prague"
     web_tools: bool = True
     smtp: SmtpConfig | None = None
-    max_iterations: int = 50
+    profile_path: Path = field(default_factory=lambda: Path("profil.md").resolve())
+    daily_email_limit: int = 20
+    max_iterations: int = 80
+
+    def load_profile(self) -> str | None:
+        """The seller's company and offer description, or None if not filled in yet."""
+        if not self.profile_path.is_file():
+            return None
+        text = self.profile_path.read_text(encoding="utf-8").strip()
+        return text or None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -69,4 +78,6 @@ class Config:
             timezone=os.environ.get("AIAGENT_TIMEZONE") or "Europe/Prague",
             web_tools=_flag("AIAGENT_WEB_TOOLS", True),
             smtp=smtp,
+            profile_path=Path(os.environ.get("AIAGENT_PROFILE") or "profil.md").expanduser().resolve(),
+            daily_email_limit=int(os.environ.get("AIAGENT_DAILY_EMAIL_LIMIT") or 20),
         )
