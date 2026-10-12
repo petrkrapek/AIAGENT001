@@ -30,28 +30,60 @@ timedatectl set-timezone Europe/Prague
 
 Pokud se po aktualizaci objeví hláška, že je potřeba restart, spusťte `reboot`, počkejte minutu a přihlaste se znovu (krok 1).
 
-## 3. Vlastní uživatel místo roota
+## 3. Vlastní uživatel s přihlášením heslem
 
-Agenta je bezpečnější provozovat pod běžným uživatelem. Vytvořte uživatele `agent` (zeptá se na heslo, ostatní otázky stačí odklepnout Enterem):
+Agenta je bezpečnější provozovat pod běžným uživatelem než pod rootem.
+
+**3a. Vytvořte uživatele `agent`.** Příkaz se zeptá na heslo (dvakrát) a pak na jméno a další údaje, ty stačí odklepnout Enterem. Zvolte silné heslo: aspoň 16 znaků, nebo několik náhodných slov. Server je z internetu dostupný a roboti hesla neustále zkoušejí.
 
 ```bash
 adduser agent
 usermod -aG sudo agent
 ```
 
-Pokud se přihlašujete SSH klíčem, zkopírujte ho i novému uživateli:
+**3b. Ověřte, že SSH povoluje přihlášení heslem.** Na některých obrazech Ubuntu je ve výchozím stavu vypnuté.
 
 ```bash
-rsync --archive --chown=agent:agent ~/.ssh /home/agent
+sshd -T | grep -i passwordauthentication
 ```
 
-Odhlaste se (`exit`) a přihlaste se už jako nový uživatel:
+- Vypíše `passwordauthentication yes`: je to v pořádku, pokračujte krokem 3c.
+- Vypíše `passwordauthentication no`: zapněte ho.
+
+  ```bash
+  grep -rl "PasswordAuthentication" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+  ```
+
+  Ve vypsaném souboru (nejčastěji `/etc/ssh/sshd_config.d/50-cloud-init.conf`) změňte řádek na `PasswordAuthentication yes`, například:
+
+  ```bash
+  sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf
+  systemctl restart ssh
+  ```
+
+**3c. Vyzkoušejte přihlášení v novém okně.** Současné okno s rootem nechte otevřené. Otevřete druhé okno terminálu a přihlaste se:
 
 ```bash
 ssh agent@IP_ADRESA_SERVERU
 ```
 
-Všechny další kroky dělejte jako uživatel `agent`.
+Zadejte heslo z kroku 3a. Pokud přihlášení funguje, okno s rootem zavřete (`exit`).
+
+**3d. Ochrana proti hádání hesla** (doporučeno). Program fail2ban po několika neúspěšných pokusech zablokuje IP adresu útočníka:
+
+```bash
+sudo apt install -y fail2ban
+sudo systemctl enable --now fail2ban
+```
+
+Volitelně zakažte přímé přihlášení roota. Pro správu pak používáte `sudo` pod uživatelem `agent`:
+
+```bash
+echo "PermitRootLogin no" | sudo tee /etc/ssh/sshd_config.d/10-no-root.conf
+sudo systemctl restart ssh
+```
+
+Všechny další kroky dělejte jako uživatel `agent`. Příkazy se `sudo` se při prvním použití zeptají na jeho heslo.
 
 ## 4. Firewall
 
