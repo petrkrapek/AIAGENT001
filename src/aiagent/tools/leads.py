@@ -19,6 +19,9 @@ STATUSES = (
     "do_not_contact",  # never contact again (opt-out)
 )
 
+# Leads per list_leads call, newest first: keeps the result well within the tool-result size limit.
+LIST_LIMIT = 100
+
 EDITABLE = (
     "company", "ico", "website", "email", "email_source", "contact_name", "contact_role",
     "city", "industry", "fit_reason", "notes", "status", "service_id",
@@ -107,11 +110,15 @@ def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
     def list_leads(status: str | None = None, query: str | None = None) -> str:
         if status is not None and status not in STATUSES:
             raise ToolError(f"Neplatný stav '{status}'.")
-        leads = repo.search(status=status, query=query)
+        leads = repo.search(status=status, query=query, limit=LIST_LIMIT + 1)
         if not leads:
             return "Žádné leady."
         counts = repo.status_counts()
         header = "Celkem podle stavu: " + ", ".join(f"{k} {v}" for k, v in counts.items())
+        if len(leads) > LIST_LIMIT:
+            leads = leads[:LIST_LIMIT]
+            header += (f"\nZobrazeno {LIST_LIMIT} nejnovějších. Starší najdeš upřesněním (query: název, "
+                       "město, e-mail, web), duplicity save_lead hlídá sám.")
         return truncate(header + "\n" + "\n".join(format_lead(lead) for lead in leads))
 
     def get_lead(id: str) -> str:

@@ -67,6 +67,17 @@ def test_no_draft_for_do_not_contact(registry):
         call(registry, "save_draft", id="rec00000000000001", subject="x", body="y")
 
 
+def test_list_leads_shows_the_newest(registry, repos, monkeypatch):
+    from aiagent.tools import leads
+    monkeypatch.setattr(leads, "LIST_LIMIT", 3)
+    for n in range(1, 6):
+        repos.leads.create({"company": f"Firma {n}", "status": "new"})
+    out = call(registry, "list_leads")
+    assert [line.split("] ")[1] for line in out.splitlines() if line.startswith("rec")] == \
+        ["Firma 5", "Firma 4", "Firma 3"]
+    assert "new 5" in out and "Zobrazeno 3 nejnovějších" in out
+
+
 def test_list_leads_filters(registry):
     add_lead(registry, city="Brno")
     add_lead(registry, company="Beta", ico="2", website="beta.cz", email=None, city="Praha", status="new")
@@ -133,6 +144,38 @@ def test_freemail_domain_is_not_a_company(registry):
     out = add_lead(registry, company="Řezník", ico="8", website=None, email="reznik@seznam.cz",
                    email_source="https://reznik.cz")
     assert out.startswith("Uloženo")
+
+
+def test_profile_sites_are_not_a_company(registry, repos):
+    add_lead(registry, company="Alfa", ico="7", website="https://www.facebook.com/alfa", email=None)
+    # A different company with only a Facebook page (or a firmy.cz listing) is not a duplicate.
+    for n, website in enumerate(("facebook.com/beta", "m.facebook.com/gama", "https://www.firmy.cz/detail/1"), 8):
+        assert add_lead(registry, company=f"Firma {n}", ico=str(n), website=website, email=None).startswith("Uloženo")
+    # Without its own website the company is still recognized by its company mailbox.
+    add_lead(registry, company="Delta", ico="20", website="facebook.com/delta", email="info@delta.cz")
+    assert repos.leads.get(rid(5))["domain"] == "delta.cz"
+    assert "už existuje" in add_lead(registry, company="Delta 2", ico="21", website="https://delta.cz",
+                                     email=None)
+
+
+def test_opt_out_on_shared_sites_blocks_only_that_company(registry, repos):
+    add_lead(registry, company="Alfa", ico="7", website="facebook.com/alfa", email=None, status="do_not_contact")
+    assert [r["domain"] for r in repos.blocklist.rows] == [""]
+    assert add_lead(registry, company="Beta", ico="8", website="facebook.com/beta", email=None).startswith("Uloženo")
+    # A row a person typed for a free-mail or profile site blocks only exact matches, not everyone there.
+    repos.blocklist.block(name="Seznam.cz", domain="seznam.cz", reason="stávající zákazník")
+    repos.blocklist.block(name="Omyl", domain="facebook.com")
+    assert add_lead(registry, company="Gama", ico="9", website="facebook.com/gama",
+                    email="gama@seznam.cz").startswith("Uloženo")
+    with pytest.raises(ToolError, match="Seznam.cz"):
+        add_lead(registry, company="Seznam", ico="10", website="https://www.seznam.cz", email=None)
+
+
+def test_opt_out_without_identifiers_is_not_copied_again(repos):
+    from aiagent.repos import sync_blocklist
+    repos.leads.create({"company": "Jen název", "status": "do_not_contact"})
+    assert sync_blocklist(repos.leads, repos.blocklist) == 0
+    assert sync_blocklist(repos.leads, repos.blocklist) == 0 and repos.blocklist.rows == []
 
 
 def test_ico_is_normalized_for_duplicates(registry):

@@ -45,6 +45,15 @@ FREEMAIL = {
     "icloud.com", "me.com", "gmx.com", "gmx.net", "proton.me", "protonmail.com",
 }
 
+# Sites where companies only have a profile page (facebook.com/alfa, firmy.cz/detail/…), and their
+# subdomains: the host says nothing about which company it is.
+PROFILE_SITES = {
+    "facebook.com", "fb.com", "instagram.com", "linkedin.com", "x.com", "twitter.com", "youtube.com",
+    "youtu.be", "tiktok.com", "pinterest.com", "google.com", "goo.gl", "linktr.ee", "wa.me", "t.me",
+    "firmy.cz", "mapy.cz", "mapy.com", "zivefirmy.cz", "najisto.centrum.cz", "kurzy.cz", "justice.cz",
+    "ares.gov.cz", "heureka.cz", "zbozi.cz",
+}
+
 PROFILE_FIELDS = (
     "Firma", "IČO", "Web", "O nás", "Čím se lišíme", "Ideální zákazník", "Koho neoslovovat",
     "Obecné reference", "Výzva k akci", "Tón e-mailů", "Podpis",
@@ -80,13 +89,21 @@ def domain(url_or_email: str | None) -> str:
     return host.strip(" >.").removeprefix("www.")
 
 
-def company_domain(website: str | None, email: str | None) -> str:
-    """Domain identifying the company: from its website, else from a non-freemail address."""
+def site_domain(website: str | None) -> str:
+    """Domain of the company's own website; empty for a profile on a shared site (facebook.com/alfa)."""
     host = domain(website)
-    if host:
-        return host
+    return "" if any(host == site or host.endswith("." + site) for site in PROFILE_SITES) else host
+
+
+def mail_domain(email: str | None) -> str:
+    """Domain of a company mailbox; empty for free-mail providers (seznam.cz, gmail.com…)."""
     host = domain(email)
     return "" if host in FREEMAIL else host
+
+
+def company_domain(website: str | None, email: str | None) -> str:
+    """Domain identifying the company: from its own website, else from a company (non-freemail) address."""
+    return site_domain(website) or mail_domain(email)
 
 
 def normalize_ico(ico: str | None) -> str | None:
@@ -219,7 +236,9 @@ class AirtableLeads:
         )
         return bool(self.client.list_records(at.LEADS, formula, fields=["Firma"], max_records=1))
 
-    def search(self, status: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
+    def search(self, status: str | None = None, query: str | None = None,
+               limit: int | None = None) -> list[dict[str, Any]]:
+        """Matching leads, newest first; at most `limit` of them."""
         clauses = []
         if status:
             clauses.append(f"{{Stav}} = {at.esc(at.LEAD_STATUS_LABELS[status])}")
@@ -227,7 +246,7 @@ class AirtableLeads:
             haystack = " & ' ' & ".join(f"{{{LEAD_FIELDS[k]}}}" for k in SEARCH_FIELDS)
             clauses.append(f"SEARCH({at.esc(query.lower())}, LOWER({haystack}))")
         formula = f"AND({', '.join(clauses)})" if clauses else None
-        records = self.client.list_records(at.LEADS, formula, sort=[("Vytvořeno", "asc")])
+        records = self.client.list_records(at.LEADS, formula, sort=[("Vytvořeno", "desc")], max_records=limit)
         return [_lead_from_record(r) for r in records]
 
     def status_counts(self) -> dict[str, int]:
@@ -370,7 +389,9 @@ def find_blocked(entries: list[dict[str, Any]], email: str | None = None, websit
                  ico: str | None = None) -> dict[str, Any] | None:
     """The blocklist entry matching the e-mail, the company's domain (or a subdomain) or the IČO."""
     email = (email or "").strip().lower()
-    hosts = {host for host in (domain(email), domain(website)) if host}
+    # Only domains that identify one company: a row for seznam.cz or facebook.com must not block
+    # everyone with a mailbox or a profile there.
+    hosts = {host for host in (mail_domain(email), site_domain(website)) if host}
     ico = normalize_ico(ico)
     for entry in entries:
         if (email and entry["email"] == email) or (ico and entry["ico"] == ico):
@@ -393,6 +414,8 @@ def block_lead(blocklist: Any, lead: dict[str, Any], entries: list[dict[str, Any
     entry = blocked_entry(lead.get("company"), lead.get("email"),
                           company_domain(lead.get("website"), lead.get("email")), lead.get("ico"),
                           f"Stav Nekontaktovat (lead {lead['id']})")
+    if not (entry["email"] or entry["domain"] or entry["ico"]):
+        return False  # nothing a row could ever match; it would only be added again on every start
     blocklist.add(entry)
     entries.append(entry)
     return True

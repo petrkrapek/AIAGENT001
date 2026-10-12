@@ -76,15 +76,16 @@ class MemoryLeads:
             for lead in self.leads.values()
         )
 
-    def search(self, status: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
-        leads = list(self.leads.values())
+    def search(self, status: str | None = None, query: str | None = None,
+               limit: int | None = None) -> list[dict[str, Any]]:
+        leads = list(reversed(self.leads.values()))  # newest first
         if status:
             leads = [lead for lead in leads if lead["status"] == status]
         if query:
             q = query.lower()
             leads = [lead for lead in leads
                      if q in " ".join(str(lead.get(k) or "") for k in SEARCH_FIELDS).lower()]
-        return [dict(lead) for lead in leads]
+        return [dict(lead) for lead in leads[:limit]]
 
     def status_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
