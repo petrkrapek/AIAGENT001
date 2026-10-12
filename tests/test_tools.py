@@ -54,10 +54,23 @@ def test_approval_rules(registry):
     assert not registry.get("save_lead").requires_approval({})
 
 
-def test_strict_tool_definitions(registry):
+def test_strict_tools_stay_within_api_limit(config, repos):
+    """The API rejects >24 optional parameters across strict tools (seen live: 42 → HTTP 400)."""
+    from aiagent.tools import MAX_STRICT_OPTIONAL_PARAMS
+    config.smtp = SmtpConfig(host="smtp.example.com", sender="me@example.com")
+    config.send_mode = "approve"
+    config.web_tools = True
+    api = build_registry(config, repos).to_api()
+    strict = [t for t in api if t.get("strict")]
+    optional = sum(len(t["input_schema"]["properties"]) - len(t["input_schema"]["required"]) for t in strict)
+    assert optional <= MAX_STRICT_OPTIONAL_PARAMS
+    names = {t["name"] for t in strict}
+    assert "http_request" not in names and "save_lead" not in names and "update_lead" not in names
+    assert {"send_email", "save_draft", "ares_search", "get_lead"} <= names
+
+
+def test_tool_parameters_are_described(registry):
     api = {t["name"]: t for t in registry.to_api()}
-    assert api["http_request"].get("strict") is None
-    assert all(t.get("strict") for name, t in api.items() if name != "http_request")
     for name, tool in api.items():
         for prop, spec in tool["input_schema"]["properties"].items():
             assert spec.get("description") or spec.get("enum"), f"{name}.{prop} bez popisu"

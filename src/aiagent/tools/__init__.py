@@ -9,6 +9,8 @@ from typing import Any
 from ..config import Config
 
 MAX_RESULT_CHARS = 20_000
+# The API rejects requests whose strict tool schemas have more optional parameters than this.
+MAX_STRICT_OPTIONAL_PARAMS = 24
 
 
 class ToolError(Exception):
@@ -31,13 +33,18 @@ class Tool:
             return bool(self.needs_approval(tool_input))
         return self.needs_approval
 
-    def to_api(self) -> dict[str, Any]:
+    @property
+    def optional_params(self) -> int:
+        schema = self.input_schema
+        return len(schema.get("properties", {})) - len(schema.get("required", []))
+
+    def to_api(self, strict: bool | None = None) -> dict[str, Any]:
         definition: dict[str, Any] = {
             "name": self.name,
             "description": self.description,
             "input_schema": self.input_schema,
         }
-        if self.strict:
+        if self.strict if strict is None else strict:
             definition["strict"] = True
         return definition
 
@@ -57,10 +64,24 @@ def truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
     return text[:limit] + f"\n\n[... zkráceno, celkem {len(text)} znaků]"
 
 
+def strict_tool_names(tools: list[Tool], limit: int = MAX_STRICT_OPTIONAL_PARAMS) -> set[str]:
+    """Tools that can keep strict mode within the API's optional-parameter budget.
+
+    Strict mode is dropped first for the tools with the most optional parameters (e.g. save_lead);
+    their handlers validate input themselves. Deterministic, so the prompt cache stays stable.
+    """
+    strict = sorted((t for t in tools if t.strict), key=lambda t: (-t.optional_params, t.name))
+    total = sum(t.optional_params for t in strict)
+    while strict and total > limit:
+        total -= strict.pop(0).optional_params
+    return {t.name for t in strict}
+
+
 class ToolRegistry:
     def __init__(self, tools: list[Tool], server_tools: list[dict[str, Any]] | None = None):
         self._tools = {tool.name: tool for tool in tools}
         self.server_tools = server_tools or []
+        self._strict = strict_tool_names(tools)
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools
@@ -74,7 +95,7 @@ class ToolRegistry:
 
     def to_api(self) -> list[dict[str, Any]]:
         # Sorted, deterministic order keeps the prompt-cache prefix stable.
-        client_tools = [self._tools[name].to_api() for name in sorted(self._tools)]
+        client_tools = [self._tools[name].to_api(strict=name in self._strict) for name in sorted(self._tools)]
         return client_tools + self.server_tools
 
 

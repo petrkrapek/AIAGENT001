@@ -243,14 +243,17 @@ docker compose run --rm agent
 Agent se představí a vypíše, jaké služby a jaký režim odesílání má. Pak čeká na vaše zadání za `vy ›`.
 
 Práce s tmux:
+- poznáte ho podle zeleného pruhu dole v terminálu,
 - odpojit se a nechat agenta běžet: `Ctrl+B`, pak `D`,
-- vrátit se k němu (i po novém přihlášení): `tmux attach -t agent`.
+- vrátit se k němu (i po novém přihlášení): `tmux attach -t agent`. Tento příkaz píšete jen *mimo* tmux. Uvnitř tmux skončí hláškou „sessions should be nested with care“, protože už v něm jste.
 
 ---
 
 ## Co psát agentovi
 
 ### Příkazy v chatu
+
+Tyto příkazy píšete **do chatu agenta** za výzvu `vy ›`, ne přímo do terminálu serveru. V terminálu (výzva `agent@vps…$`) skončí hláškou „No such file or directory“. Chat spustíte příkazem `docker compose run --rm agent`.
 
 | Příkaz | Co udělá |
 |---|---|
@@ -364,5 +367,8 @@ docker system prune -f
 | `Neplatný API klíč` / `Chybí API klíč` | Zkontrolujte `ANTHROPIC_API_KEY` v `.env`. |
 | `SMTP nefunguje: … timed out` | Poskytovatel VPS může blokovat odchozí SMTP. Zkuste port 587 (STARTTLS) nebo 465 (SSL), případně požádejte poskytovatele o odblokování. |
 | Agent nevidí změny profilu/služeb | V chatu napište `/reset`. |
+| `-bash: /profil: No such file or directory` | Příkaz chatu jste napsali do terminálu. Nejdřív spusťte chat (`docker compose run --rm agent`), pak `/profil`. |
+| `sessions should be nested with care` | V tmux už jste, `tmux attach` není potřeba. |
+| `Schemas contains too many optional parameters` | Starší verze agenta, aktualizujte ji (`git pull && docker compose build`). |
 
 Podrobnější výpis (spotřeba tokenů a request id u každého volání modelu) zapnete v `.env` řádkem `AIAGENT_LOG_LEVEL=INFO`.
