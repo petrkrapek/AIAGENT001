@@ -80,3 +80,11 @@ def test_stream_accepts_every_parameter_the_agent_sends():
     for name in ("model", "max_tokens", "system", "messages", "tools", "thinking", "output_config",
                  "cache_control", "betas", "fallbacks"):
         assert name in params, name
+
+
+def test_missing_blocklist_table_after_update(monkeypatch, capsys):
+    set_env(monkeypatch, **AIRTABLE)
+    missing = AirtableError("Airtable chyba 403: Token nemá přístup…", status=403)
+    with mock.patch.object(cli.AirtableClient, "list_records", side_effect=[[], missing]):
+        assert cli.main(["run", "x"]) == cli.EXIT_CONFIG
+    assert "aiagent airtable-setup" in capsys.readouterr().err

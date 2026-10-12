@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..config import Config, ImapConfig, SmtpConfig
-from ..repos import now_iso
+from ..repos import describe_blocked, find_blocked, now_iso
 from . import Tool, ToolError, schema
 
 
@@ -199,7 +199,7 @@ def single_address(value: str) -> str:
     return pairs[0][1].strip().lower()
 
 
-def build(config: Config, repo: Any) -> list[Tool]:
+def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
     smtp = config.smtp
     assert smtp is not None
     auto = config.send_mode == "auto"
@@ -226,6 +226,9 @@ def build(config: Config, repo: Any) -> list[Tool]:
             )
         if lead["status"] in ("do_not_contact", "not_interested") or repo.is_suppressed(address):
             raise ToolError("Tento kontakt si nepřeje být oslovován. E-mail neodeslán.")
+        blocked = find_blocked(blocklist.entries(), address, lead.get("website"), lead.get("ico"))
+        if blocked:
+            raise ToolError(f"Kontakt je v tabulce Blokované kontakty ({describe_blocked(blocked)}). E-mail neodeslán.")
         if lead_id in sent_this_session:
             raise ToolError(f"Leadu {lead_id} už byl v tomto běhu e-mail odeslán. Neodesílej znovu.")
         if lead.get("sending_started"):

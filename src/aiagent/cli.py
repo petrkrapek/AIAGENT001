@@ -16,7 +16,7 @@ from . import __version__
 from .agent import Agent, AgentEvents, format_services
 from .airtable import LEADS, AirtableClient, AirtableError, setup_base
 from .config import EFFORT_LEVELS, SEND_MODES, Config
-from .repos import airtable_repos, redact
+from .repos import airtable_repos, redact, sync_blocklist
 from .tools import ToolError, build_registry
 
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_INTERRUPTED = 0, 1, 2, 130
@@ -343,14 +343,19 @@ def _main(argv: list[str] | None) -> int:
             parser.error("zadejte úkol jako argument nebo přes --file")
 
     client = AirtableClient(config.airtable_token, config.airtable_base_id)
+    repos = airtable_repos(client, config.timezone)
     try:
         client.list_records(LEADS, fields=["Firma"], max_records=1)
+        # Opt-outs set by hand in Airtable go to the blocklist too, so deleting the lead can't lift them.
+        added = sync_blocklist(repos.leads, repos.blocklist)
     except AirtableError as exc:
         err(str(exc))
-        if exc.status in (404, 422):
-            print(dim("Tabulky vytvoříte příkazem: aiagent airtable-setup"), file=sys.stderr)
+        if exc.status in (403, 404, 422):
+            print(dim("Chybějící tabulky (i nové po aktualizaci agenta) vytvoříte příkazem: aiagent airtable-setup"),
+                  file=sys.stderr)
         return EXIT_CONFIG
-    repos = airtable_repos(client, config.timezone)
+    if added:
+        print(dim(f"Do tabulky Blokované kontakty doplněno kontaktů ve stavu Nekontaktovat: {added}."))
 
     if args.yes:
         approver = auto_approver

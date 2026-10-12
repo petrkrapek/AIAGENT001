@@ -106,11 +106,11 @@ def build_registry(config: Config, repos: Any) -> ToolRegistry:
     tools: list[Tool] = []
     tools += system.build(config)
     tools += ares.build(config)
-    tools += leads.build(config, repos.leads)
+    tools += leads.build(config, repos.leads, repos.blocklist)
     tools += tasks.build(config, repos.tasks)
     tools += web.build(config)
     if config.sending_enabled:
-        tools += mail.build(config, repos.leads)
+        tools += mail.build(config, repos.leads, repos.blocklist)
 
     server_tools = web.server_tools() if config.web_tools else []
     return ToolRegistry(tools, server_tools)

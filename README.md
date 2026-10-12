@@ -42,7 +42,7 @@ Mám návrhy odeslat?
 
 ## Airtable
 
-Agent používá ve vaší bázi šest tabulek. Vytvoří je sám příkazem `aiagent airtable-setup`:
+Agent používá ve vaší bázi sedm tabulek. Vytvoří je sám příkazem `aiagent airtable-setup`:
 
 | Tabulka | Obsah |
 |---|---|
@@ -51,9 +51,10 @@ Agent používá ve vaší bázi šest tabulek. Vytvoří je sám příkazem `ai
 | **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, nabízená služba, návrh e-mailu (předmět, text, **schválení návrhu**), kdy byl naposledy osloven, nepotvrzené odeslání (*Odesílání zahájeno*) |
 | **E-maily** | každý odeslaný e-mail: předmět, text, komu, kdy, propojený s leadem |
 | **Úkoly** | připomínky a follow-upy s termínem |
+| **Blokované kontakty** | koho agent nikdy neosloví: odhlášené kontakty zapisuje sám, konkurenci nebo stávající zákazníky **doplňujete vy** |
 | **Audit** | záznam každé akce agenta: nástroj, vstup, čas, schválení a výsledek |
 
-Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví a sám tento stav zrušit nemůže, to jde jen ručně v Airtable. Stav, který agent nezná (třeba vlastní nebo přejmenovaný), bere z opatrnosti jako „Nekontaktovat“.
+Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví a sám tento stav zrušit nemůže, to jde jen ručně v Airtable. Kontakt si zároveň zapíše do tabulky Blokované kontakty (ručně nastavené stavy převezme při dalším spuštění), takže blokace platí, i když lead smažete. Stav, který agent nezná (třeba vlastní nebo přejmenovaný), bere z opatrnosti jako „Nekontaktovat“.
 
 **Schválení návrhu:** když agent uloží nebo změní návrh e-mailu, nastaví pole *Schválení návrhu* na „Čeká na schválení“. Návrh si v Airtable přečtěte, případně upravte, a přepněte na „Schváleno“. Toto pole agent nikdy nenastavuje sám. V režimu `auto` odešle jen takto schválené návrhy, beze změny textu.
 
@@ -67,11 +68,25 @@ Jeden řádek s tím, co platí pro firmu jako celek. Agent ho čte před každo
 | O nás | jedna až dvě věty, čím se firma zabývá |
 | Čím se lišíme | v čem jste lepší než konkurence |
 | Ideální zákazník | obor, velikost, region a signály, že nabídku potřebují (u služeb jde upřesnit v poli „Pro koho“) |
-| Koho neoslovovat | konkurence, stávající zákazníci, veřejná správa… |
+| Koho neoslovovat | obecná pravidla, např. veřejná správa, firmy nad 250 zaměstnanců (konkrétní firmy patří do tabulky Blokované kontakty) |
 | Obecné reference | pravdivé výsledky a reference firmy (reference ke konkrétní službě patří do tabulky Služby) |
 | Výzva k akci | co má adresát udělat, např. 15minutový hovor |
 | Tón e-mailů | např. „vykání, věcně, bez superlativů, do 150 slov“ |
 | Podpis | jméno, funkce, firma, telefon, e-mail, web |
+
+### Tabulka Blokované kontakty
+
+Firmy a adresy, které agent nesmí uložit ani oslovit. Každý řádek blokuje podle vyplněných polí:
+
+| Pole | Co do něj napsat |
+|---|---|
+| Název | pro vaši orientaci, např. název firmy |
+| E-mail | konkrétní adresa |
+| Doména | doména nebo web firmy (`konkurence.cz` i `https://www.konkurence.cz/`); blokuje i její subdomény a všechny adresy na ní |
+| IČO | IČO firmy (mezery nevadí) |
+| Důvod | např. „konkurence“, „stávající zákazník“, „odhlásil se“ |
+
+Sem patří konkurence a stávající zákazníci. Agent sem sám zapisuje kontakty ve stavu Nekontaktovat. U adresy na veřejné schránce (Seznam, Gmail…) blokuje jen tu adresu, ne celou doménu. Řádek smažte, jen když kontakt opravdu znovu oslovovat chcete.
 
 ### Tabulka Služby
 
@@ -310,5 +325,6 @@ uv pip compile pyproject.toml --python-version 3.13 --python-platform linux --ge
 
 - Agent čte cizí weby, které mohou obsahovat podstrčené pokyny (prompt injection). Proto každý HTTP požadavek schvalujete vy, požadavky na vnitřní a neveřejné adresy jsou zakázané (i přes přesměrování) a model má výslovný pokyn obsah webů brát jen jako data.
 - E-mail jde jen na adresu uloženou u leadu, jedné osobě. Bez terminálu jen schválené návrhy z Airtable.
+- Odhlášení a blokace (tabulka Blokované kontakty) kontroluje kód při ukládání leadu, návrhu i při odeslání, nespoléhá na model.
 - Hodnoty, které vypadají jako tajné (hlavičky `Authorization`, tokeny, hesla), se v auditu i na obrazovce maskují. Řídicí znaky z textů modelu a webů se před výpisem odstraňují, aby nešlo podvrhnout, co schvalujete.
 - Klíče jsou jen v `.env`, který není v gitu ani v Docker image. Kontejner běží pod neprivilegovaným uživatelem a nic neukládá.

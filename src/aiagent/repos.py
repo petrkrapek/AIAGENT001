@@ -356,6 +356,72 @@ class AirtableServices:
         return services
 
 
+# --- blocked contacts ----------------------------------------------------------------------
+
+
+def blocked_entry(name: str | None, email: str | None, domain_or_url: str | None, ico: str | None,
+                  reason: str | None = None) -> dict[str, Any]:
+    """A blocklist row normalized for matching (people type domains as URLs, IČO with spaces…)."""
+    return {"name": (name or "").strip(), "email": (email or "").strip().lower(),
+            "domain": domain(domain_or_url), "ico": normalize_ico(ico), "reason": (reason or "").strip()}
+
+
+def find_blocked(entries: list[dict[str, Any]], email: str | None = None, website: str | None = None,
+                 ico: str | None = None) -> dict[str, Any] | None:
+    """The blocklist entry matching the e-mail, the company's domain (or a subdomain) or the IČO."""
+    email = (email or "").strip().lower()
+    hosts = {host for host in (domain(email), domain(website)) if host}
+    ico = normalize_ico(ico)
+    for entry in entries:
+        if (email and entry["email"] == email) or (ico and entry["ico"] == ico):
+            return entry
+        if entry["domain"] and any(h == entry["domain"] or h.endswith("." + entry["domain"]) for h in hosts):
+            return entry
+    return None
+
+
+def describe_blocked(entry: dict[str, Any]) -> str:
+    label = entry["name"] or entry["email"] or entry["domain"] or entry["ico"] or "záznam"
+    return f"{label}: {entry['reason']}" if entry["reason"] else label
+
+
+def block_lead(blocklist: Any, lead: dict[str, Any], entries: list[dict[str, Any]] | None = None) -> bool:
+    """Copy an opted-out lead to the blocklist unless it's already covered; True if a row was added."""
+    entries = blocklist.entries() if entries is None else entries
+    if find_blocked(entries, lead.get("email"), lead.get("website"), lead.get("ico")):
+        return False
+    entry = blocked_entry(lead.get("company"), lead.get("email"),
+                          company_domain(lead.get("website"), lead.get("email")), lead.get("ico"),
+                          f"Stav Nekontaktovat (lead {lead['id']})")
+    blocklist.add(entry)
+    entries.append(entry)
+    return True
+
+
+def sync_blocklist(leads: Any, blocklist: Any) -> int:
+    """Copy do_not_contact leads (also ones set by hand in Airtable) to the blocklist; returns the count."""
+    entries = blocklist.entries()
+    return sum(block_lead(blocklist, lead, entries) for lead in leads.search(status="do_not_contact"))
+
+
+class AirtableBlocklist:
+    def __init__(self, client: at.AirtableClient):
+        self.client = client
+
+    def entries(self) -> list[dict[str, Any]]:
+        records = self.client.list_records(at.BLOCKED, fields=["Název", "E-mail", "Doména", "IČO", "Důvod"])
+        return [
+            blocked_entry(f.get("Název"), f.get("E-mail"), f.get("Doména"), f.get("IČO"), f.get("Důvod"))
+            for f in (r.get("fields", {}) for r in records)
+        ]
+
+    def add(self, entry: dict[str, Any]) -> None:
+        self.client.create_record(at.BLOCKED, {
+            "Název": entry["name"] or None, "E-mail": entry["email"] or None, "Doména": entry["domain"] or None,
+            "IČO": entry["ico"], "Důvod": entry["reason"] or None, "Přidáno": now_iso(),
+        })
+
+
 @dataclass
 class Repos:
     leads: Any
@@ -363,8 +429,9 @@ class Repos:
     audit: Any
     services: Any
     profile: Any
+    blocklist: Any
 
 
 def airtable_repos(client: at.AirtableClient, tz: str) -> Repos:
     return Repos(AirtableLeads(client, tz), AirtableTasks(client), AirtableAudit(client),
-                 AirtableServices(client), AirtableProfile(client))
+                 AirtableServices(client), AirtableProfile(client), AirtableBlocklist(client))

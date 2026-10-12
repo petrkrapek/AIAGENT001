@@ -8,6 +8,7 @@ from typing import Any
 from aiagent.repos import (
     SEARCH_FIELDS,
     Repos,
+    blocked_entry,
     company_domain,
     format_profile,
     local_day,
@@ -147,5 +148,21 @@ class MemoryServices:
         return [dict(s) for s in self.services]
 
 
+class MemoryBlocklist:
+    def __init__(self):
+        self.rows: list[dict[str, Any]] = []
+
+    def block(self, name=None, email=None, domain=None, ico=None, reason=None) -> None:
+        """What a person does in Airtable: values as typed, e.g. a URL in the Doména field."""
+        self.rows.append({"name": name, "email": email, "domain": domain, "ico": ico, "reason": reason})
+
+    def entries(self) -> list[dict[str, Any]]:
+        return [blocked_entry(r["name"], r["email"], r["domain"], r["ico"], r["reason"]) for r in self.rows]
+
+    def add(self, entry: dict[str, Any]) -> None:
+        self.rows.append(dict(entry))
+
+
 def memory_repos(tz: str = "Europe/Prague") -> Repos:
-    return Repos(MemoryLeads(tz), MemoryTasks(), MemoryAudit(), MemoryServices(), MemoryProfile())
+    return Repos(MemoryLeads(tz), MemoryTasks(), MemoryAudit(), MemoryServices(), MemoryProfile(),
+                 MemoryBlocklist())
