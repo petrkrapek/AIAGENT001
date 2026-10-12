@@ -222,13 +222,15 @@ def run_safely(agent: Agent, task: str) -> int:
 
 
 def smtp_test(config: Config, test_to: str | None) -> int:
-    from .tools.mail import smtp_check
+    from .tools.mail import imap_check, smtp_check
 
     if config.smtp is None:
         err("SMTP není nastavené. Doplňte SMTP_HOST, SMTP_USER, SMTP_PASSWORD a SMTP_FROM do .env.")
         return EXIT_CONFIG
     try:
         print(smtp_check(config.smtp, test_to))
+        if config.imap is not None:
+            print(imap_check(config.imap))
     except ToolError as exc:
         err(str(exc))
         return EXIT_ERROR

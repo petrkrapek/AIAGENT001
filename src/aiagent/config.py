@@ -60,6 +60,18 @@ class SmtpConfig:
 
 
 @dataclass
+class ImapConfig:
+    """Mailbox where copies of sent e-mails are stored (folder Odeslané / Sent)."""
+
+    host: str
+    port: int = 993
+    user: str = ""
+    password: str = ""
+    # Empty: detect the Sent folder on the server.
+    folder: str = ""
+
+
+@dataclass
 class Config:
     model: str = "claude-opus-5-5"
     # Claude Opus 5.5 at medium effort beats earlier models at high; raise it only if needed.
@@ -67,6 +79,7 @@ class Config:
     timezone: str = "Europe/Prague"
     web_tools: bool = True
     smtp: SmtpConfig | None = None
+    imap: ImapConfig | None = None
     airtable_token: str = ""
     airtable_base_id: str = ""
     send_mode: str = "off"
@@ -131,6 +144,16 @@ class Config:
                 security=security,
             )
 
+        imap = None
+        if os.environ.get("IMAP_HOST"):
+            imap = ImapConfig(
+                host=os.environ["IMAP_HOST"],
+                port=_int("IMAP_PORT", 993, 1, 65535),
+                user=os.environ.get("IMAP_USER") or os.environ.get("SMTP_USER", ""),
+                password=os.environ.get("IMAP_PASSWORD") or os.environ.get("SMTP_PASSWORD", ""),
+                folder=(os.environ.get("IMAP_SENT_FOLDER") or "").strip(),
+            )
+
         send_mode = (os.environ.get("AIAGENT_SEND_MODE") or ("approve" if smtp else "off")).lower()
 
         return cls(
@@ -139,6 +162,7 @@ class Config:
             timezone=(os.environ.get("AIAGENT_TIMEZONE") or "Europe/Prague").strip(),
             web_tools=_flag("AIAGENT_WEB_TOOLS", True),
             smtp=smtp,
+            imap=imap,
             airtable_token=(os.environ.get("AIRTABLE_TOKEN") or "").strip(),
             airtable_base_id=(os.environ.get("AIRTABLE_BASE_ID") or "").strip(),
             send_mode=send_mode,

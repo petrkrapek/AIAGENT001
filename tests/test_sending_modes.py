@@ -200,3 +200,80 @@ def test_pause_and_hours_from_env(clean_env):
         clean_env.setenv("AIAGENT_SEND_HOURS", bad)
         with pytest.raises(ValueError, match="AIAGENT_SEND_HOURS"):
             Config.from_env().validate()
+
+
+# --- copy to the Sent folder (IMAP) --------------------------------------------------------------
+
+FOLDERS = [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Sent) "/" "Odeslan&AOk-"',
+           b'(\\HasNoChildren) "/" Archiv']
+
+
+@pytest.fixture
+def fake_imap():
+    with mock.patch("aiagent.tools.mail.imaplib.IMAP4_SSL") as imap_cls:
+        server = imap_cls.return_value.__enter__.return_value
+        server.list.return_value = ("OK", FOLDERS)
+        server.append.return_value = ("OK", [b"APPEND completed"])
+        yield server
+
+
+def test_imap_from_env_reuses_smtp_login(clean_env):
+    for key, value in {**SMTP_ENV, "IMAP_HOST": "imap.example.com"}.items():
+        clean_env.setenv(key, value)
+    imap = Config.from_env().imap
+    assert (imap.host, imap.port, imap.user, imap.password, imap.folder) == \
+        ("imap.example.com", 993, "obchod@priklad.cz", "tajne", "")
+
+
+def test_sent_folder_detection():
+    from aiagent.tools.mail import decode_folder, pick_sent_folder
+    assert decode_folder("Odeslan&AOk-") == "Odeslané" and decode_folder("A&-B") == "A&B"
+    flagged = [("INBOX", ""), ("Odeslan&AOk-", "\\Sent")]
+    assert pick_sent_folder(flagged) == "Odeslan&AOk-"
+    assert pick_sent_folder([("INBOX", ""), ("Sent Items", "")]) == "Sent Items"
+    assert pick_sent_folder(flagged, "odeslané") == "Odeslan&AOk-"  # typed with diacritics in .env
+    with pytest.raises(ToolError, match="IMAP_SENT_FOLDER"):
+        pick_sent_folder([("INBOX", "")])
+    with pytest.raises(ToolError, match="Dostupné složky: INBOX, Odeslané"):
+        pick_sent_folder(flagged, "Koš")
+
+
+def test_sent_email_is_copied_to_sent_folder(config, repos, fake_imap):
+    from aiagent.config import ImapConfig
+    config = smtp_config(config, "approve")
+    config.imap = ImapConfig(host="imap.example.com", user="u", password="p")
+    registry = build_registry(config, repos)
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"):
+        out = registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz",
+                                                 subject="Nabídka", body="Text")
+    assert "Kopii" not in out
+    fake_imap.login.assert_called_once_with("u", "p")
+    folder, flags, _, raw = fake_imap.append.call_args[0]
+    assert folder == '"Odeslan&AOk-"' and flags == "(\\Seen)"
+    assert b"To: info@alfa.cz\r\n" in raw and b"List-Unsubscribe:" in raw
+
+
+def test_failed_copy_does_not_fail_the_send(config, repos, fake_imap):
+    import imaplib
+
+    from aiagent.config import ImapConfig
+    config = smtp_config(config, "approve")
+    config.imap = ImapConfig(host="imap.example.com")
+    registry = build_registry(config, repos)
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    fake_imap.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"):
+        out = registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz",
+                                                 subject="Nabídka", body="Text")
+    assert "odeslán" in out and "AUTHENTICATIONFAILED" in out
+    assert repos.leads.get("rec00000000000001")["status"] == "contacted"
+
+
+def test_cli_smtp_test_checks_imap(clean_env, capsys, fake_imap):
+    for key, value in {**SMTP_ENV, "IMAP_HOST": "imap.example.com"}.items():
+        clean_env.setenv(key, value)
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"):
+        assert main(["smtp-test"]) == 0
+    assert "do složky Odeslané" in capsys.readouterr().out
+    fake_imap.append.assert_not_called()

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import base64
+import imaplib
 import random
+import re
 import smtplib
 import ssl
 import time
 from datetime import datetime
+from email import policy
 from email.message import EmailMessage
 from email.utils import formatdate, getaddresses, make_msgid
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..config import Config, SmtpConfig
+from ..config import Config, ImapConfig, SmtpConfig
 from ..repos import now_iso
 from . import Tool, ToolError, schema
 
@@ -59,6 +63,99 @@ def deliver(smtp: SmtpConfig, msg: EmailMessage) -> None:
             return  # only closing the connection failed; the message was already accepted
         maybe_sent = stage == "send" and not isinstance(exc, REJECTED)
         raise DeliveryError(f"Odeslání e-mailu selhalo: {exc}", maybe_sent) from exc
+
+
+# --- copy to the Sent folder (IMAP) ----------------------------------------------------------
+
+# Fallbacks for servers that don't flag the Sent folder (names in IMAP's modified UTF-7).
+SENT_FOLDER_NAMES = ("Sent", "Sent Items", "Sent Messages", "INBOX.Sent", "Odeslan&AOk-", "INBOX.Odeslan&AOk-")
+_LIST_LINE = re.compile(r'^\((?P<flags>[^)]*)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(?P<name>.+)$')
+
+
+def decode_folder(name: str) -> str:
+    """IMAP folder names use modified UTF-7: 'Odeslan&AOk-' is 'Odeslané'."""
+    def chunk(match: re.Match[str]) -> str:
+        data = match.group(1)
+        if not data:
+            return "&"
+        data = data.replace(",", "/")
+        return base64.b64decode(data + "=" * (-len(data) % 4)).decode("utf-16-be")
+    try:
+        return re.sub(r"&([^-]*)-", chunk, name)
+    except ValueError:
+        return name
+
+
+def _imap_quote(name: str) -> str:
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def list_folders(server: imaplib.IMAP4) -> list[tuple[str, str]]:
+    """(raw name, flags) of every folder on the server."""
+    status, data = server.list()
+    if status != "OK":
+        raise ToolError(f"IMAP server nevrátil seznam složek: {data}")
+    folders = []
+    for item in data:
+        if not isinstance(item, bytes):
+            continue  # names sent as literals are rare and never the Sent folder
+        match = _LIST_LINE.match(item.decode("utf-8", errors="replace"))
+        if match:
+            name = match.group("name").strip()
+            if name.startswith('"') and name.endswith('"'):
+                name = re.sub(r"\\(.)", r"\1", name[1:-1])
+            folders.append((name, match.group("flags")))
+    return folders
+
+
+def pick_sent_folder(folders: list[tuple[str, str]], configured: str = "") -> str:
+    if configured:
+        for name, _ in folders:
+            if configured.lower() in (name.lower(), decode_folder(name).lower()):
+                return name
+        available = ", ".join(decode_folder(name) for name, _ in folders)
+        raise ToolError(f"Složka '{configured}' (IMAP_SENT_FOLDER) na serveru není. Dostupné složky: {available}.")
+    for name, flags in folders:
+        if "\\sent" in flags.lower():
+            return name
+    by_name = {name.lower(): name for name, _ in folders}
+    for candidate in SENT_FOLDER_NAMES:
+        if candidate.lower() in by_name:
+            return by_name[candidate.lower()]
+    raise ToolError("Složku Odeslané se nepodařilo najít. Nastavte IMAP_SENT_FOLDER (název složky ve schránce).")
+
+
+def _imap_session(imap: ImapConfig) -> imaplib.IMAP4_SSL:
+    return imaplib.IMAP4_SSL(imap.host, imap.port, ssl_context=ssl.create_default_context(), timeout=30)
+
+
+def save_to_sent(imap: ImapConfig, msg: EmailMessage) -> str:
+    """Store a copy of a sent e-mail in the Sent folder; returns the folder name."""
+    try:
+        with _imap_session(imap) as server:
+            server.login(imap.user, imap.password)
+            folder = pick_sent_folder(list_folders(server), imap.folder)
+            status, data = server.append(_imap_quote(folder), "(\\Seen)", imaplib.Time2Internaldate(time.time()),
+                                         msg.as_bytes(policy=policy.SMTP))
+            if status != "OK":
+                raise ToolError(f"IMAP server kopii odmítl: {data}")
+    except (imaplib.IMAP4.error, OSError) as exc:
+        raise ToolError(f"IMAP: {exc}") from exc
+    return decode_folder(folder)
+
+
+def imap_check(imap: ImapConfig) -> str:
+    try:
+        with _imap_session(imap) as server:
+            server.login(imap.user, imap.password)
+            folder = pick_sent_folder(list_folders(server), imap.folder)
+    except (imaplib.IMAP4.error, OSError) as exc:
+        raise ToolError(f"IMAP nefunguje: {exc}") from exc
+    return (f"Připojení k IMAP {imap.host}:{imap.port} je v pořádku, kopie odeslaných e-mailů se budou ukládat "
+            f"do složky {decode_folder(folder)}.")
+
+
+# --- sending -----------------------------------------------------------------------------------
 
 
 def build_message(smtp: SmtpConfig, to: str, subject: str, body: str, unsubscribe: bool = False) -> EmailMessage:
@@ -173,8 +270,9 @@ def build(config: Config, repo: Any) -> list[Tool]:
         except Exception as exc:
             raise ToolError(f"E-mail neodeslán: nepodařilo se zapsat zahájení odesílání do Airtable ({exc}).") \
                 from exc
+        message = build_message(smtp, address, subject, body, unsubscribe=True)
         try:
-            deliver(smtp, build_message(smtp, address, subject, body, unsubscribe=True))
+            deliver(smtp, message)
         except DeliveryError as exc:
             if exc.maybe_sent:
                 sent_this_session.add(lead_id)
@@ -192,6 +290,13 @@ def build(config: Config, repo: Any) -> list[Tool]:
         sent_count["n"] += 1
         last_send["at"] = time.monotonic()
 
+        copy_note = ""
+        if config.imap is not None:
+            try:
+                save_to_sent(config.imap, message)
+            except ToolError as exc:
+                copy_note = f" Kopii do složky Odeslané se nepodařilo uložit ({exc})."
+
         sent_at = now_iso()
         try:
             # The e-mail record first: the lead's mark is cleared only once everything is stored.
@@ -203,8 +308,8 @@ def build(config: Config, repo: Any) -> list[Tool]:
                 f"E-mail BYL odeslán na {address}, ale zápis do Airtable selhal ({exc}). Neodesílej ho "
                 "znovu (lead zůstává zablokovaný polem Odesílání zahájeno); upozorni uživatele, ať odeslání "
                 "zapíše ručně (stav Osloven, tabulka E-maily) a pole Odesílání zahájeno vymaže."
-            )
-        return f"E-mail '{subject}' odeslán na {address}; lead {lead_id} je ve stavu contacted."
+            ) + copy_note
+        return f"E-mail '{subject}' odeslán na {address}; lead {lead_id} je ve stavu contacted.{copy_note}"
 
     if auto:
         approval_note = (

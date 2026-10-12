@@ -182,6 +182,17 @@ AIAGENT_SEND_MODE=approve
 
 Nastavení ověříte příkazem `aiagent smtp-test` (v Dockeru `docker compose run --rm agent smtp-test`). S `--to vas@email.cz` zároveň pošle testovací e-mail.
 
+**Kopie ve složce Odeslané:** SMTP server odeslaný e-mail obvykle do vaší schránky neuloží (výjimkou je třeba Gmail). Aby byly e-maily od agenta vidět ve složce Odeslané, doplňte IMAP stejné schránky:
+
+```ini
+# Seznam: imap.seznam.cz (port 993, SSL)
+IMAP_HOST=imap.seznam.cz
+# přihlášení se převezme ze SMTP_USER a SMTP_PASSWORD; jinak IMAP_USER a IMAP_PASSWORD
+# složku Odeslané agent najde sám; jinak IMAP_SENT_FOLDER=Odeslané
+```
+
+Agent pak každý odeslaný e-mail uloží jako přečtený do složky Odeslané. Když se kopie uložit nepodaří, e-mail je i tak odeslaný a agent na to upozorní. `smtp-test` ověří i IMAP a vypíše, do které složky bude kopie ukládat. U Gmailu IMAP nenastavujte, e-maily by ve složce Odeslané byly dvakrát. Microsoft 365 přihlášení k IMAP heslem nepovoluje, tam tuto funkci nevyužijete.
+
 Režim odesílání určuje `AIAGENT_SEND_MODE` v `.env` nebo přepínač `--send-mode`:
 
 | Režim | Co dělá | Kdy použít |
@@ -244,6 +255,7 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | – | SMTP server pro odesílání |
+| `IMAP_HOST`, `IMAP_PORT`, `IMAP_USER`, `IMAP_PASSWORD`, `IMAP_SENT_FOLDER` | –, `993` | ukládání kopií odeslaných e-mailů do složky Odeslané (IMAP přes SSL; přihlášení výchozí ze SMTP) |
 | `AIAGENT_LOG_LEVEL` | `WARNING` | logování na stderr; `INFO` vypíše u každého volání modelu spotřebu tokenů a request id |
 | `AIAGENT_ENV_FILE` | `.env` | jiný konfigurační soubor (načítá se jen z aktuální složky, ne z nadřazených) |
 | `NO_COLOR` | – | vypne barevný výstup |

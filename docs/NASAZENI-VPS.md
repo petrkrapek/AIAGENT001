@@ -187,6 +187,12 @@ SMTP_PASSWORD=...
 SMTP_FROM=obchod@vasefirma.cz
 ```
 
+Aby byly e-maily od agenta vidět i ve vaší schránce ve složce Odeslané, přidejte IMAP (u Gmailu ne, ten je ukládá sám):
+
+```ini
+IMAP_HOST=imap.seznam.cz
+```
+
 Uložení v editoru nano: `Ctrl+O`, `Enter`, zavření `Ctrl+X`.
 
 Soubor obsahuje klíče, omezte k němu přístup:
@@ -229,7 +235,7 @@ Podrobný popis polí je v [README](../README.md#tabulka-profil-firmy).
 docker compose run --rm agent smtp-test --to vas@email.cz
 ```
 
-Na zadanou adresu by měl dorazit testovací e-mail.
+Na zadanou adresu by měl dorazit testovací e-mail. Pokud jste nastavili IMAP, příkaz vypíše i složku, do které se budou ukládat kopie odeslaných e-mailů.
 
 ## 14. Spuštění agenta
 
