@@ -190,7 +190,7 @@ Režim odesílání určuje `AIAGENT_SEND_MODE` v `.env` nebo přepínač `--sen
 | `approve` | před každým e-mailem ukáže celý text a čeká na „a“ | chat (výchozí, když je SMTP nastavené) |
 | `auto` | odesílá bez ptaní, ale jen návrhy, které jste v Airtable schválili (*Schválení návrhu* = Schváleno), beze změny textu; nikdy neposílá follow-upy | běh bez terminálu: cron, `docker compose run -T` |
 
-Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. E-mail jde vždy jen na adresu uloženou u leadu, a to jedné osobě (žádné kopie ani seznamy adres).
+Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), náhodná pauza mezi e-maily (`AIAGENT_SEND_PAUSE`), volitelně doba odesílání jen v pracovní dny a hodiny (`AIAGENT_SEND_HOURS`), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. E-mail jde vždy jen na adresu uloženou u leadu, a to jedné osobě (žádné kopie ani seznamy adres). Každý e-mail má hlavičku `List-Unsubscribe`, takže poštovní programy u něj ukážou tlačítko pro odhlášení; žádost o odhlášení přijde jako odpověď na adresu odesílatele.
 
 **Ochrana proti dvojímu odeslání:** těsně před odesláním agent zapíše k leadu čas do pole *Odesílání zahájeno* a po úspěšném zápisu do tabulky E-maily ho zase vymaže. Když se výsledek odeslání nepodaří zapsat (výpadek Airtable, spojení se SMTP serverem spadne uprostřed odesílání), pole zůstane vyplněné a agent leadu žádný další e-mail nepošle, ani v příštím běhu. Zkontrolujte ve schránce složku Odeslané: pokud e-mail odešel, nastavte stav Osloven, pokud ne, stačí pole vymazat. Typický postup s režimem `auto`: cron ráno najde firmy a připraví návrhy, vy je během dne schválíte v Airtable a další běh je odešle.
 
@@ -238,6 +238,8 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIAGENT_MODEL` | `claude-opus-5-5` | model Claude |
 | `AIAGENT_EFFORT` | `medium` | hloubka uvažování (`low` až `max`); vyšší je pečlivější, ale dražší a pomalejší |
 | `AIAGENT_DAILY_EMAIL_LIMIT` | `20` | maximum odeslaných e-mailů za den |
+| `AIAGENT_SEND_PAUSE` | `30-90` | náhodná pauza v sekundách mezi dvěma e-maily jednoho běhu (`0` = bez pauzy); počítá se do ní i čas, kdy e-mail schvalujete |
+| `AIAGENT_SEND_HOURS` | – | doba odesílání ve všední dny, např. `8-17` (od 8:00 do 16:59); prázdné = kdykoli |
 | `AIAGENT_TIMEZONE` | `Europe/Prague` | časové pásmo |
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |

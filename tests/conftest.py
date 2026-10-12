@@ -20,7 +20,7 @@ def isolated_env(monkeypatch, tmp_path):
 
 @pytest.fixture
 def config() -> Config:
-    return Config(web_tools=False, airtable_token="pat123", airtable_base_id="appTEST")
+    return Config(web_tools=False, airtable_token="pat123", airtable_base_id="appTEST", send_pause=(0, 0))
 
 
 @pytest.fixture

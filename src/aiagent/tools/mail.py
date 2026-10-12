@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import random
 import smtplib
 import ssl
+import time
 from datetime import datetime
 from email.message import EmailMessage
-from email.utils import getaddresses, make_msgid
+from email.utils import formatdate, getaddresses, make_msgid
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -59,14 +61,33 @@ def deliver(smtp: SmtpConfig, msg: EmailMessage) -> None:
         raise DeliveryError(f"Odeslání e-mailu selhalo: {exc}", maybe_sent) from exc
 
 
-def build_message(smtp: SmtpConfig, to: str, subject: str, body: str) -> EmailMessage:
+def build_message(smtp: SmtpConfig, to: str, subject: str, body: str, unsubscribe: bool = False) -> EmailMessage:
     msg = EmailMessage()
     msg["From"] = smtp.sender
     msg["To"] = to
     msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=smtp.sender.rsplit("@", 1)[-1] or None)
+    if unsubscribe:
+        # Mail clients show an "unsubscribe" button; the request arrives as a reply to the sender.
+        msg["List-Unsubscribe"] = f"<mailto:{smtp.sender}?subject=Odhlaseni>"
     msg.set_content(body)
     return msg
+
+
+def now_in(tz: str) -> datetime:
+    return datetime.now(ZoneInfo(tz))
+
+
+def within_hours(moment: datetime, hours: tuple[int, int] | None) -> bool:
+    """Weekdays between the start hour (inclusive) and the end hour (exclusive); None = any time."""
+    if hours is None:
+        return True
+    return moment.weekday() < 5 and hours[0] <= moment.hour < hours[1]
+
+
+def describe_hours(hours: tuple[int, int]) -> str:
+    return f"po–pá {hours[0]}–{hours[1]} h"
 
 
 def _normalize(text: str) -> str:
@@ -88,6 +109,15 @@ def build(config: Config, repo: Any) -> list[Tool]:
     # Leads e-mailed in this process: a guard if recording a sent e-mail to Airtable failed.
     sent_this_session: set[str] = set()
     sent_count = {"n": 0}
+    last_send: dict[str, float] = {}
+
+    def pause_between_emails() -> None:
+        """Space out e-mails sent by one run; a burst looks like bulk mail to spam filters."""
+        if "at" not in last_send or config.send_pause[1] <= 0:
+            return
+        remaining = random.uniform(*config.send_pause) - (time.monotonic() - last_send["at"])
+        if remaining > 0:
+            time.sleep(remaining)
 
     def send_email(lead_id: str, to: str, subject: str, body: str, follow_up: bool = False) -> str:
         lead = repo.get(lead_id)
@@ -125,9 +155,16 @@ def build(config: Config, repo: Any) -> list[Tool]:
                 )
             if (_normalize(draft["subject"]), _normalize(draft["body"])) != (_normalize(subject), _normalize(body)):
                 raise ToolError("Text se liší od schváleného návrhu. Odeslat lze jen schválený text beze změn.")
-        today = datetime.now(ZoneInfo(config.timezone)).date().isoformat()
-        if max(repo.sent_count(today), sent_count["n"]) >= config.daily_email_limit:
+        now = now_in(config.timezone)
+        if not within_hours(now, config.send_hours):
+            assert config.send_hours is not None
+            raise ToolError(
+                f"Teď je mimo povolenou dobu odesílání ({describe_hours(config.send_hours)}, AIAGENT_SEND_HOURS). "
+                "E-mail neodeslán, návrh zůstává uložený; odešli ho až v povolené době."
+            )
+        if max(repo.sent_count(now.date().isoformat()), sent_count["n"]) >= config.daily_email_limit:
             raise ToolError(f"Dosažen denní limit {config.daily_email_limit} odeslaných e-mailů.")
+        pause_between_emails()
 
         # Mark the lead before sending: if the outcome can't be recorded afterwards (Airtable down,
         # crash), the mark keeps later runs from sending the same e-mail again.
@@ -137,10 +174,11 @@ def build(config: Config, repo: Any) -> list[Tool]:
             raise ToolError(f"E-mail neodeslán: nepodařilo se zapsat zahájení odesílání do Airtable ({exc}).") \
                 from exc
         try:
-            deliver(smtp, build_message(smtp, address, subject, body))
+            deliver(smtp, build_message(smtp, address, subject, body, unsubscribe=True))
         except DeliveryError as exc:
             if exc.maybe_sent:
                 sent_this_session.add(lead_id)
+                last_send["at"] = time.monotonic()
                 raise ToolError(
                     f"{exc} Není jisté, že e-mail neodešel, proto lead zůstává zablokovaný (pole Odesílání "
                     "zahájeno). Neodesílej znovu; upozorni uživatele, ať zkontroluje složku Odeslané."
@@ -152,6 +190,7 @@ def build(config: Config, repo: Any) -> list[Tool]:
             raise
         sent_this_session.add(lead_id)
         sent_count["n"] += 1
+        last_send["at"] = time.monotonic()
 
         sent_at = now_iso()
         try:
@@ -173,6 +212,8 @@ def build(config: Config, repo: Any) -> list[Tool]:
         )
     else:
         approval_note = "Každé odeslání schvaluje uživatel, který uvidí celý text."
+    if config.send_hours is not None:
+        approval_note += f" Odesílá jen {describe_hours(config.send_hours)} ({config.timezone})."
 
     return [
         Tool(

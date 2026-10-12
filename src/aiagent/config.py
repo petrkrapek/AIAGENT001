@@ -27,6 +27,21 @@ def _int(name: str, default: int, low: int, high: int) -> int:
     return value
 
 
+def _range(name: str, default: tuple[int, int] | None, low: int, high: int) -> tuple[int, int] | None:
+    """'30-90' -> (30, 90), '60' -> (60, 60); empty -> default."""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    parts = [p.strip() for p in raw.split("-")]
+    try:
+        start, end = (int(parts[0]), int(parts[-1])) if len(parts) <= 2 else (None, None)
+    except ValueError:
+        start = end = None
+    if start is None or end is None or not low <= start <= end <= high:
+        raise ValueError(f"{name} má tvar od-do (celá čísla {low} až {high}), např. '{low}-{high}', ne '{raw}'.")
+    return start, end
+
+
 def _flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -56,6 +71,10 @@ class Config:
     airtable_base_id: str = ""
     send_mode: str = "off"
     daily_email_limit: int = 20
+    # Random pause in seconds between two e-mails sent by one run (deliverability).
+    send_pause: tuple[int, int] = (30, 90)
+    # Sending window (start hour inclusive, end hour exclusive) on weekdays; None = any time.
+    send_hours: tuple[int, int] | None = None
     max_iterations: int = 80
 
     def validate(self) -> None:
@@ -63,6 +82,8 @@ class Config:
             raise ValueError(f"AIAGENT_SEND_MODE musí být jedno z {', '.join(SEND_MODES)}, ne '{self.send_mode}'")
         if self.send_mode != "off" and self.smtp is None:
             raise ValueError(f"AIAGENT_SEND_MODE={self.send_mode} vyžaduje nastavené SMTP (SMTP_HOST a další).")
+        if self.send_hours is not None and self.send_hours[0] >= self.send_hours[1]:
+            raise ValueError("AIAGENT_SEND_HOURS: začátek musí být dřív než konec, např. 8-17.")
         if self.smtp is not None and not self.smtp.sender:
             raise ValueError("Chybí SMTP_FROM (adresa odesílatele).")
         try:
@@ -122,4 +143,6 @@ class Config:
             airtable_base_id=(os.environ.get("AIRTABLE_BASE_ID") or "").strip(),
             send_mode=send_mode,
             daily_email_limit=_int("AIAGENT_DAILY_EMAIL_LIMIT", 20, 0, 10_000),
+            send_pause=_range("AIAGENT_SEND_PAUSE", (30, 90), 0, 3600) or (0, 0),
+            send_hours=_range("AIAGENT_SEND_HOURS", None, 0, 24),
         )
