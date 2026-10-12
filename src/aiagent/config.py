@@ -27,6 +27,13 @@ def _int(name: str, default: int, low: int, high: int) -> int:
     return value
 
 
+def _context_trigger() -> int:
+    value = _int("AIAGENT_CONTEXT_TRIGGER", 60_000, 0, 1_000_000)
+    if 0 < value < 20_000:
+        raise ValueError("AIAGENT_CONTEXT_TRIGGER musí být 0 (vypnuto) nebo aspoň 20000 tokenů.")
+    return value
+
+
 def _flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -57,6 +64,8 @@ class Config:
     send_mode: str = "off"
     daily_email_limit: int = 20
     max_iterations: int = 80
+    # Old tool results are cleared server-side once a request exceeds this many input tokens (0 = off).
+    context_trigger: int = 60_000
 
     def validate(self) -> None:
         if self.send_mode not in SEND_MODES:
@@ -122,4 +131,5 @@ class Config:
             airtable_base_id=(os.environ.get("AIRTABLE_BASE_ID") or "").strip(),
             send_mode=send_mode,
             daily_email_limit=_int("AIAGENT_DAILY_EMAIL_LIMIT", 20, 0, 10_000),
+            context_trigger=_context_trigger(),
         )

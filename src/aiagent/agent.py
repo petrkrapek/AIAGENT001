@@ -23,6 +23,14 @@ log = logging.getLogger("aiagent")
 MAX_TOKENS = 64_000
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 THINKING_UPDATES_BETA = "thinking-display-updates-2026-08-18"
+CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
+# Server-side clearing of old tool results (web pages, search results, lead listings): the most
+# recent tool uses stay, older results are replaced by a placeholder. Clearing invalidates the prompt
+# cache from that point, so it only runs when it frees a worthwhile amount at once.
+KEEP_TOOL_USES = 4
+CLEAR_AT_LEAST = 20_000
+# Short results the agent needs for its final summary.
+NEVER_CLEARED = ("research_company",)
 # Feature support differs per model; unsupported parameters would make every request fail.
 FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
 THINKING_UPDATES_MODELS = {"claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-sonnet-5-5"}
@@ -305,6 +313,9 @@ class Agent:
             # If the model declines for policy reasons, the API retries on a fallback model.
             betas.append(FALLBACK_BETA)
             extra["fallbacks"] = "default"
+        if self.config.context_trigger:
+            betas.append(CONTEXT_MANAGEMENT_BETA)
+            extra["context_management"] = self._context_management()
         if betas:
             extra["betas"] = betas
         with self.client.beta.messages.stream(
@@ -328,7 +339,24 @@ class Agent:
             getattr(usage, "cache_read_input_tokens", None), getattr(usage, "cache_creation_input_tokens", None),
             getattr(response, "_request_id", None),
         )
+        applied = getattr(getattr(response, "context_management", None), "applied_edits", None) or []
+        for edit in applied:
+            log.info("context cleared: %s tool uses, %s input tokens",
+                     getattr(edit, "cleared_tool_uses", None), getattr(edit, "cleared_input_tokens", None))
         return response
+
+    def _context_management(self) -> dict[str, Any]:
+        trigger = self.config.context_trigger
+        edit: dict[str, Any] = {
+            "type": "clear_tool_uses_20250919",
+            "trigger": {"type": "input_tokens", "value": trigger},
+            "keep": {"type": "tool_uses", "value": KEEP_TOOL_USES},
+            "clear_at_least": {"type": "input_tokens", "value": min(CLEAR_AT_LEAST, trigger // 3)},
+        }
+        excluded = [name for name in NEVER_CLEARED if name in self.registry]
+        if excluded:
+            edit["exclude_tools"] = excluded
+        return {"edits": [edit]}
 
     def _emit_blocks(self, content: list[Any]) -> str:
         texts = []

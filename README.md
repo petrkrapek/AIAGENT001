@@ -236,6 +236,7 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIAGENT_MODEL` | `claude-opus-5-5` | model Claude |
 | `AIAGENT_EFFORT` | `medium` | hloubka uvažování (`low` až `max`); vyšší je pečlivější, ale dražší a pomalejší |
 | `AIAGENT_DAILY_EMAIL_LIMIT` | `20` | maximum odeslaných e-mailů za den |
+| `AIAGENT_CONTEXT_TRIGGER` | `60000` | od kolika tokenů v požadavku se ze starší historie mažou výsledky nástrojů (stránky webů, výsledky hledání); `0` = vypnuto |
 | `AIAGENT_TIMEZONE` | `Europe/Prague` | časové pásmo |
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |
@@ -267,7 +268,7 @@ src/aiagent/
     └── __init__.py   registr nástrojů
 ```
 
-Agent volá Messages API se streamováním (dlouhé kroky tak nenarazí na časový limit) a s adaptivním uvažováním. Mezi voláním nástrojů vypisuje krátké průběžné poznámky. Opakující se část požadavku (prompt, profil, nástroje, historie) se ukládá do cache, takže další kroky stojí méně. Kdyby model požadavek odmítl, API ho zkusí zopakovat na záložním modelu (`fallbacks: "default"`). Každé volání nástroje se zapisuje do tabulky Audit v Airtable.
+Agent volá Messages API se streamováním (dlouhé kroky tak nenarazí na časový limit) a s adaptivním uvažováním. Mezi voláním nástrojů vypisuje krátké průběžné poznámky. Opakující se část požadavku (prompt, profil, nástroje, historie) se ukládá do cache, takže další kroky stojí méně. Když historie naroste nad `AIAGENT_CONTEXT_TRIGGER` tokenů, API z ní samo odstraní starší výsledky nástrojů (poslední čtyři nechá). Agent tak nečte stále dokola stránky, které už zpracoval, a delší úkoly nezdražují s každým krokem. Kdyby model požadavek odmítl, API ho zkusí zopakovat na záložním modelu (`fallbacks: "default"`). Každé volání nástroje se zapisuje do tabulky Audit v Airtable.
 
 ### Přidání vlastního nástroje
 
