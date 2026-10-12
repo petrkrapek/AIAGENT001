@@ -35,10 +35,26 @@ def check_public_url(url: str) -> None:
             raise ToolError(f"Požadavky na vnitřní nebo neveřejné adresy ({ip}) nejsou povolené.")
 
 
+def url_host(url: str) -> str:
+    return (urllib.parse.urlparse(url).hostname or "").lower()
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urllib.parse.urlparse(url)
+    return parsed.scheme, (parsed.hostname or "").lower(), parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
 class _SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         check_public_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _origin(newurl) != _origin(req.full_url):
+            # urllib copies every header to the new URL; tokens, API keys and cookies the caller set
+            # belong to the original server only (and must not travel over plain http either).
+            for name in list(new.headers):
+                if name.lower() != "user-agent":
+                    del new.headers[name]
+        return new
 
 
 _opener = urllib.request.build_opener(_SafeRedirect)

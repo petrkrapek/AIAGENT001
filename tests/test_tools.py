@@ -89,6 +89,23 @@ def test_http_request_refuses_redirect_to_internal(registry):
         web._SafeRedirect().redirect_request(None, None, 302, "Found", {}, "http://10.0.0.1/")
 
 
+def test_redirect_to_another_server_drops_credentials(monkeypatch):
+    import urllib.request
+
+    from aiagent.tools import web
+    monkeypatch.setattr(web, "check_public_url", lambda url: None)
+    request = urllib.request.Request("https://api.example.com/hook", headers={
+        "Authorization": "Bearer tajne", "X-Api-Key": "k", "Cookie": "s=1", "User-Agent": "aiagent/1"})
+
+    def follow(newurl):
+        return web._SafeRedirect().redirect_request(request, None, 302, "Found", {}, newurl)
+
+    assert follow("https://api.example.com/v2/hook").get_header("Authorization") == "Bearer tajne"
+    for newurl in ("https://jinde.example/", "http://api.example.com/hook", "https://api.example.com:8443/"):
+        new = follow(newurl)
+        assert new.header_items() == [("User-agent", "aiagent/1")], newurl
+
+
 def test_console_output_is_sanitized():
     from aiagent.cli import _short, safe
     assert "\x1b" not in safe("ok\x1b[2K\rto: jiny@x.cz")

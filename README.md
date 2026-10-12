@@ -245,7 +245,7 @@ V chatu fungují příkazy `/leads`, `/profil`, `/sluzby`, `/tasks`, `/tools`, `
 aiagent run "Najdi 5 nových firem podle profilu a připrav jim návrhy e-mailů."
 ```
 
-Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` proto e-maily neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Pro odesílání bez dozoru použijte `--send-mode auto` (nebo `AIAGENT_SEND_MODE=auto`), který pošle jen návrhy schválené v Airtable. Přepínač `--yes` schvaluje ostatní akce (např. webhooky), e-maily ale nikdy.
+Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` proto e-maily neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Pro odesílání bez dozoru použijte `--send-mode auto` (nebo `AIAGENT_SEND_MODE=auto`), který pošle jen návrhy schválené v Airtable. Přepínač `--yes` schvaluje ostatní akce, e-maily ale nikdy. HTTP požadavky (webhooky) schválí jen na servery uvedené v `AIAGENT_HTTP_ALLOWED_HOSTS`, aby obsah načtené webové stránky nemohl agenta navést k odeslání dat jinam.
 
 Návratový kód příkazu `run` je 0, když agent úkol dokončil, 1 při chybě nebo nedokončení (odmítnutí, limit délky nebo kroků) a 130 po Ctrl+C, takže ho cron i skripty umí vyhodnotit. Zadání můžete předat i souborem: `aiagent run -f zadani.md` (nebo `-f -` ze standardního vstupu).
 
@@ -270,6 +270,7 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIAGENT_SUBAGENTS` | `1` | každou firmu prověřuje samostatný krátký běh agenta (`0` = vše v jedné konverzaci) |
 | `AIAGENT_SUBAGENT_MODEL` | jako `AIAGENT_MODEL` | model pro prověřování firem (např. levnější `claude-sonnet-5-5`) |
 | `AIAGENT_CONTEXT_TRIGGER` | `60000` | od kolika tokenů v požadavku se ze starší historie mažou výsledky nástrojů (stránky webů, výsledky hledání); `0` = vypnuto |
+| `AIAGENT_HTTP_ALLOWED_HOSTS` | prázdné | servery (oddělené čárkou), na které smí běh s `--yes` posílat HTTP požadavky bez dotazu, např. `hook.eu1.make.com` |
 | `AIAGENT_TIMEZONE` | `Europe/Prague` | časové pásmo |
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |

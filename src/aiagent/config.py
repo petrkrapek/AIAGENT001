@@ -102,6 +102,8 @@ class Config:
     subagents: bool = True
     subagent_model: str = ""  # empty = the main model
     subagent_max_iterations: int = 30
+    # Hosts that `--yes` may call with http_request without asking (e.g. a Make webhook); empty = none.
+    http_allowed_hosts: tuple[str, ...] = ()
 
     def validate(self) -> None:
         if self.send_mode not in SEND_MODES:
@@ -185,4 +187,8 @@ class Config:
             context_trigger=_context_trigger(),
             subagents=_flag("AIAGENT_SUBAGENTS", True),
             subagent_model=(os.environ.get("AIAGENT_SUBAGENT_MODEL") or "").strip(),
+            http_allowed_hosts=tuple(
+                host.strip().lower() for host in (os.environ.get("AIAGENT_HTTP_ALLOWED_HOSTS") or "").split(",")
+                if host.strip()
+            ),
         )

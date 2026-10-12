@@ -13,12 +13,13 @@ from typing import Any
 import anthropic
 
 from . import __version__
-from .agent import Agent, AgentEvents, format_services
+from .agent import Agent, AgentEvents, Approver, format_services
 from .airtable import LEADS, AirtableClient, AirtableError, setup_base
 from .config import EFFORT_LEVELS, SEND_MODES, Config
 from .repos import airtable_repos, redact, sync_blocklist
 from .research import enable_research
 from .tools import ToolError, build_registry
+from .tools.web import url_host
 
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_INTERRUPTED = 0, 1, 2, 130
 
@@ -105,13 +106,25 @@ def noninteractive_approver(name: str, tool_input: dict[str, Any]) -> bool:
     return False
 
 
-def auto_approver(name: str, tool_input: dict[str, Any]) -> bool:
-    if name == "send_email":
-        # --yes must not become a way around the approved-draft guard of the auto send mode.
-        print(yellow("! --yes neschvaluje e-maily. Pro odesílání bez dozoru použijte AIAGENT_SEND_MODE=auto."))
-        return False
-    print(yellow(f"! Automaticky schváleno: {name}"))
-    return True
+def auto_approver(allowed_hosts: tuple[str, ...] = ()) -> Approver:
+    """Approver for --yes: approves everything except e-mails and HTTP requests to hosts not allowed."""
+
+    def approve(name: str, tool_input: dict[str, Any]) -> bool:
+        if name == "send_email":
+            # --yes must not become a way around the approved-draft guard of the auto send mode.
+            print(yellow("! --yes neschvaluje e-maily. Pro odesílání bez dozoru použijte AIAGENT_SEND_MODE=auto."))
+            return False
+        if name == "http_request":
+            # A web page read in the same run could ask the model to send data anywhere.
+            host = url_host(str(tool_input.get("url", "")))
+            if host not in allowed_hosts:
+                print(yellow(f"! --yes neschvaluje požadavky na {safe(host) or 'tuto adresu'}. "
+                             "Povolené servery nastavíte v AIAGENT_HTTP_ALLOWED_HOSTS."))
+                return False
+        print(yellow(f"! Automaticky schváleno: {name}"))
+        return True
+
+    return approve
 
 
 HELP = """Příkazy:
@@ -262,7 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--effort", choices=EFFORT_LEVELS, help="hloubka uvažování")
     parser.add_argument("--show-thinking", action="store_true", help="zobrazovat shrnutí uvažování")
     parser.add_argument("--yes", action="store_true",
-                        help="schvalovat všechny akce kromě odeslání e-mailu automaticky (opatrně!)")
+                        help="schvalovat akce automaticky, kromě odeslání e-mailu a HTTP požadavků "
+                             "na servery mimo AIAGENT_HTTP_ALLOWED_HOSTS (opatrně!)")
     parser.add_argument("--send-mode", choices=SEND_MODES,
                         help="odesílání e-mailů: off = jen návrhy, approve = se schválením, "
                              "auto = jen návrhy schválené v Airtable, bez dotazu")
@@ -359,7 +373,7 @@ def _main(argv: list[str] | None) -> int:
         print(dim(f"Do tabulky Blokované kontakty doplněno kontaktů ve stavu Nekontaktovat: {added}."))
 
     if args.yes:
-        approver = auto_approver
+        approver = auto_approver(config.http_allowed_hosts)
     elif sys.stdin.isatty():
         approver = interactive_approver
     else:

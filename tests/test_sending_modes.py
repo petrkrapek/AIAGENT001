@@ -91,8 +91,21 @@ def test_new_draft_resets_approval(config, repos):
 
 def test_yes_flag_does_not_approve_emails(capsys):
     from aiagent.cli import auto_approver
-    assert auto_approver("send_email", {}) is False
-    assert auto_approver("http_request", {"url": "https://x"}) is True
+    approve = auto_approver(("hook.eu1.make.com",))
+    assert approve("send_email", {}) is False
+    assert approve("add_task", {"title": "x"}) is True
+
+
+def test_yes_flag_approves_http_only_to_allowed_hosts(capsys, clean_env):
+    from aiagent.cli import auto_approver
+    assert auto_approver()("http_request", {"url": "https://hook.eu1.make.com/abc"}) is False
+    clean_env.setenv("AIAGENT_HTTP_ALLOWED_HOSTS", " Hook.EU1.make.com , hooks.slack.com,")
+    approve = auto_approver(Config.from_env().http_allowed_hosts)
+    assert approve("http_request", {"url": "https://hook.eu1.make.com/abc"}) is True
+    # A page read in the same run must not be able to steer data to any other server.
+    assert approve("http_request", {"url": "https://attacker.example/?data=leady"}) is False
+    assert approve("http_request", {"url": "https://hook.eu1.make.com.attacker.example/"}) is False
+    assert "AIAGENT_HTTP_ALLOWED_HOSTS" in capsys.readouterr().out
 
 
 def test_system_prompt_per_mode(config):
