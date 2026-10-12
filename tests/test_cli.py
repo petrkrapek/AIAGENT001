@@ -78,5 +78,5 @@ def test_stream_accepts_every_parameter_the_agent_sends():
     """Guards against SDK changes: the FakeClient in other tests would hide them."""
     params = inspect.signature(anthropic.Anthropic(api_key="x").beta.messages.stream).parameters
     for name in ("model", "max_tokens", "system", "messages", "tools", "thinking", "output_config",
-                 "cache_control", "betas", "fallbacks"):
+                 "cache_control", "betas", "fallbacks", "context_management"):
         assert name in params, name
