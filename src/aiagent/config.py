@@ -66,6 +66,10 @@ class Config:
     max_iterations: int = 80
     # Old tool results are cleared server-side once a request exceeds this many input tokens (0 = off).
     context_trigger: int = 60_000
+    # Each company is researched by a separate, short-lived agent (research_company).
+    subagents: bool = True
+    subagent_model: str = ""  # empty = the main model
+    subagent_max_iterations: int = 30
 
     def validate(self) -> None:
         if self.send_mode not in SEND_MODES:
@@ -132,4 +136,6 @@ class Config:
             send_mode=send_mode,
             daily_email_limit=_int("AIAGENT_DAILY_EMAIL_LIMIT", 20, 0, 10_000),
             context_trigger=_context_trigger(),
+            subagents=_flag("AIAGENT_SUBAGENTS", True),
+            subagent_model=(os.environ.get("AIAGENT_SUBAGENT_MODEL") or "").strip(),
         )
