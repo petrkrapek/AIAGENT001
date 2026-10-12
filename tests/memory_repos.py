@@ -31,7 +31,8 @@ class MemoryLeads:
     def create(self, lead: dict[str, Any]) -> dict[str, Any]:
         lead = {"service_id": None, **lead, "id": _id(self._ids), "ico": normalize_ico(lead.get("ico")),
                 "domain": company_domain(lead.get("website"), lead.get("email")),
-                "draft": None, "last_contacted": None, "created_at": now_iso(), "updated_at": now_iso()}
+                "draft": None, "last_contacted": None, "sending_started": None,
+                "created_at": now_iso(), "updated_at": now_iso()}
         self.leads[lead["id"]] = lead
         return dict(lead)
 

@@ -30,6 +30,8 @@ def format_lead(lead: dict[str, Any], full: bool = False, emails: list[dict[str,
     extras = [x for x in (lead.get("city"), lead.get("email"), lead.get("website")) if x]
     if extras:
         line += f" | {' | '.join(extras)}"
+    if lead.get("sending_started"):
+        line += f" | ODESLÁNÍ NEPOTVRZENO (zahájeno {lead['sending_started']}, zkontroluje uživatel)"
     if not full:
         return line
     rows = [line]

@@ -30,6 +30,7 @@ LEAD_FIELDS = {
     "fit_reason": "Proč se hodí",
     "notes": "Poznámky",
     "last_contacted": "Naposledy osloven",
+    "sending_started": "Odesílání zahájeno",
     "created_at": "Vytvořeno",
     "updated_at": "Aktualizováno",
 }

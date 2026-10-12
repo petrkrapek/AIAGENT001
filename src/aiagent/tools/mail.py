@@ -22,19 +22,41 @@ def open_smtp(smtp: SmtpConfig) -> smtplib.SMTP:
         server: smtplib.SMTP = smtplib.SMTP_SSL(smtp.host, smtp.port, timeout=30, context=context)
     else:
         server = smtplib.SMTP(smtp.host, smtp.port, timeout=30)
+    try:
         if smtp.security == "starttls":
             server.starttls(context=context)
-    if smtp.user:
-        server.login(smtp.user, smtp.password)
+        if smtp.user:
+            server.login(smtp.user, smtp.password)
+    except BaseException:
+        server.close()
+        raise
     return server
 
 
+class DeliveryError(ToolError):
+    """Sending failed; `maybe_sent` is True when the server may have accepted the message anyway."""
+
+    def __init__(self, message: str, maybe_sent: bool):
+        super().__init__(message)
+        self.maybe_sent = maybe_sent
+
+
+# The server explicitly refused the message: it was certainly not sent.
+REJECTED = (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError)
+
+
 def deliver(smtp: SmtpConfig, msg: EmailMessage) -> None:
+    stage = "connect"
     try:
         with open_smtp(smtp) as server:
+            stage = "send"
             server.send_message(msg)
+            stage = "done"
     except (smtplib.SMTPException, OSError) as exc:
-        raise ToolError(f"Odeslání e-mailu selhalo: {exc}") from exc
+        if stage == "done":
+            return  # only closing the connection failed; the message was already accepted
+        maybe_sent = stage == "send" and not isinstance(exc, REJECTED)
+        raise DeliveryError(f"Odeslání e-mailu selhalo: {exc}", maybe_sent) from exc
 
 
 def build_message(smtp: SmtpConfig, to: str, subject: str, body: str) -> EmailMessage:
@@ -79,6 +101,12 @@ def build(config: Config, repo: Any) -> list[Tool]:
             raise ToolError("Tento kontakt si nepřeje být oslovován. E-mail neodeslán.")
         if lead_id in sent_this_session:
             raise ToolError(f"Leadu {lead_id} už byl v tomto běhu e-mail odeslán. Neodesílej znovu.")
+        if lead.get("sending_started"):
+            raise ToolError(
+                f"Odesílání leadu {lead_id} bylo zahájeno {lead['sending_started']}, ale nebylo potvrzeno, "
+                "takže e-mail mohl odejít. Neodesílej ho. Uživatel musí zkontrolovat složku Odeslané a pak "
+                "v Airtable vymazat pole Odesílání zahájeno (případně nastavit stav Osloven)."
+            )
         if lead.get("last_contacted") and not follow_up:
             raise ToolError(
                 f"Lead {lead_id} už byl osloven {lead['last_contacted']}. "
@@ -101,18 +129,41 @@ def build(config: Config, repo: Any) -> list[Tool]:
         if max(repo.sent_count(today), sent_count["n"]) >= config.daily_email_limit:
             raise ToolError(f"Dosažen denní limit {config.daily_email_limit} odeslaných e-mailů.")
 
-        deliver(smtp, build_message(smtp, address, subject, body))
+        # Mark the lead before sending: if the outcome can't be recorded afterwards (Airtable down,
+        # crash), the mark keeps later runs from sending the same e-mail again.
+        try:
+            repo.update(lead_id, {"sending_started": now_iso()})
+        except Exception as exc:
+            raise ToolError(f"E-mail neodeslán: nepodařilo se zapsat zahájení odesílání do Airtable ({exc}).") \
+                from exc
+        try:
+            deliver(smtp, build_message(smtp, address, subject, body))
+        except DeliveryError as exc:
+            if exc.maybe_sent:
+                sent_this_session.add(lead_id)
+                raise ToolError(
+                    f"{exc} Není jisté, že e-mail neodešel, proto lead zůstává zablokovaný (pole Odesílání "
+                    "zahájeno). Neodesílej znovu; upozorni uživatele, ať zkontroluje složku Odeslané."
+                ) from exc
+            try:
+                repo.update(lead_id, {"sending_started": None})
+            except Exception:
+                pass  # the mark stays and blocks the lead: the safe side
+            raise
         sent_this_session.add(lead_id)
         sent_count["n"] += 1
 
         sent_at = now_iso()
         try:
-            repo.update(lead_id, {"status": "contacted", "last_contacted": sent_at, "draft": None})
+            # The e-mail record first: the lead's mark is cleared only once everything is stored.
             repo.add_email(lead_id, address, subject, body, sent_at)
+            repo.update(lead_id, {"status": "contacted", "last_contacted": sent_at, "draft": None,
+                                  "sending_started": None})
         except Exception as exc:
             return (
-                f"E-mail BYL odeslán na {address}, ale zápis do Airtable selhal ({exc}). "
-                "Neodesílej ho znovu; upozorni uživatele, ať odeslání zapíše ručně."
+                f"E-mail BYL odeslán na {address}, ale zápis do Airtable selhal ({exc}). Neodesílej ho "
+                "znovu (lead zůstává zablokovaný polem Odesílání zahájeno); upozorni uživatele, ať odeslání "
+                "zapíše ručně (stav Osloven, tabulka E-maily) a pole Odesílání zahájeno vymaže."
             )
         return f"E-mail '{subject}' odeslán na {address}; lead {lead_id} je ve stavu contacted."
 

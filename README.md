@@ -48,7 +48,7 @@ Agent používá ve vaší bázi šest tabulek. Vytvoří je sám příkazem `ai
 |---|---|
 | **Profil firmy** | kdo jste, ideální zákazník, tón e-mailů, podpis; **vyplňujete vy** (jeden řádek), agent jen čte |
 | **Služby** | co nabízíte; **vyplňujete vy**, agent jen čte |
-| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, nabízená služba, návrh e-mailu (předmět, text, **schválení návrhu**), kdy byl naposledy osloven |
+| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, nabízená služba, návrh e-mailu (předmět, text, **schválení návrhu**), kdy byl naposledy osloven, nepotvrzené odeslání (*Odesílání zahájeno*) |
 | **E-maily** | každý odeslaný e-mail: předmět, text, komu, kdy, propojený s leadem |
 | **Úkoly** | připomínky a follow-upy s termínem |
 | **Audit** | záznam každé akce agenta: nástroj, vstup, čas, schválení a výsledek |
@@ -190,7 +190,9 @@ Režim odesílání určuje `AIAGENT_SEND_MODE` v `.env` nebo přepínač `--sen
 | `approve` | před každým e-mailem ukáže celý text a čeká na „a“ | chat (výchozí, když je SMTP nastavené) |
 | `auto` | odesílá bez ptaní, ale jen návrhy, které jste v Airtable schválili (*Schválení návrhu* = Schváleno), beze změny textu; nikdy neposílá follow-upy | běh bez terminálu: cron, `docker compose run -T` |
 
-Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. E-mail jde vždy jen na adresu uloženou u leadu, a to jedné osobě (žádné kopie ani seznamy adres). Typický postup s režimem `auto`: cron ráno najde firmy a připraví návrhy, vy je během dne schválíte v Airtable a další běh je odešle.
+Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. E-mail jde vždy jen na adresu uloženou u leadu, a to jedné osobě (žádné kopie ani seznamy adres).
+
+**Ochrana proti dvojímu odeslání:** těsně před odesláním agent zapíše k leadu čas do pole *Odesílání zahájeno* a po úspěšném zápisu do tabulky E-maily ho zase vymaže. Když se výsledek odeslání nepodaří zapsat (výpadek Airtable, spojení se SMTP serverem spadne uprostřed odesílání), pole zůstane vyplněné a agent leadu žádný další e-mail nepošle, ani v příštím běhu. Zkontrolujte ve schránce složku Odeslané: pokud e-mail odešel, nastavte stav Osloven, pokud ne, stačí pole vymazat. Typický postup s režimem `auto`: cron ráno najde firmy a připraví návrhy, vy je během dne schválíte v Airtable a další běh je odešle.
 
 ## Použití
 

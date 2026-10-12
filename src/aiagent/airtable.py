@@ -266,6 +266,9 @@ def schema(timezone: str) -> dict[str, list[dict[str, Any]]]:
             _datetime("Návrh upraven", timezone),
             _select("Schválení návrhu", [DRAFT_PENDING, DRAFT_APPROVED]),
             _datetime("Naposledy osloven", timezone),
+            # Set just before an SMTP send, cleared once the send is recorded; a leftover value
+            # blocks the lead until a person checks whether the e-mail went out.
+            _datetime("Odesílání zahájeno", timezone),
             _datetime("Vytvořeno", timezone),
             _datetime("Aktualizováno", timezone),
         ],

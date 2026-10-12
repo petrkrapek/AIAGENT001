@@ -163,12 +163,69 @@ def test_not_interested_is_not_contacted(smtp_config, repos, fake_smtp):
 def test_sent_email_is_not_resent_when_recording_fails(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)
     add_lead(registry)
-    with mock.patch.object(repos.leads, "update", side_effect=RuntimeError("Airtable 503")):
+    with mock.patch.object(repos.leads, "add_email", side_effect=RuntimeError("Airtable 503")):
         out = call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
     assert "BYL odeslán" in out and "Neodesílej" in out
     with pytest.raises(ToolError, match="v tomto běhu"):
         call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    # A later run (cron) doesn't know about this process: the mark in Airtable blocks the lead.
+    registry = build_registry(smtp_config, repos)
+    with pytest.raises(ToolError, match="nebylo potvrzeno"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
     assert fake_smtp.send_message.call_count == 1
+    assert "ODESLÁNÍ NEPOTVRZENO" in call(registry, "list_leads")
+
+
+def test_no_send_without_the_mark(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with mock.patch.object(repos.leads, "update", side_effect=RuntimeError("Airtable 503")):
+        with pytest.raises(ToolError, match="neodeslán"):
+            call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    fake_smtp.send_message.assert_not_called()
+
+
+def test_successful_send_clears_the_mark(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    assert repos.leads.get(rid(1))["sending_started"] is None
+
+
+def test_refused_send_clears_the_mark(smtp_config, repos, fake_smtp):
+    import smtplib
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    fake_smtp.send_message.side_effect = smtplib.SMTPRecipientsRefused({"info@alfa.cz": (550, b"no")})
+    with pytest.raises(ToolError, match="selhalo"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    lead = repos.leads.get(rid(1))
+    assert lead["sending_started"] is None and lead["status"] == "qualified"
+
+
+def test_ambiguous_send_keeps_the_lead_blocked(smtp_config, repos, fake_smtp):
+    import smtplib
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    fake_smtp.send_message.side_effect = smtplib.SMTPServerDisconnected("spojení ukončeno")
+    with pytest.raises(ToolError, match="Odeslané"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    assert repos.leads.get(rid(1))["sending_started"]
+    fake_smtp.send_message.side_effect = None
+    with pytest.raises(ToolError, match="nebylo potvrzeno"):
+        call(build_registry(smtp_config, repos), "send_email", lead_id=rid(1), to="info@alfa.cz",
+             subject="x", body="y")
+    assert fake_smtp.send_message.call_count == 1
+
+
+def test_failing_quit_after_accepted_message_counts_as_sent(smtp_config, repos):
+    import smtplib
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP") as smtp_cls:
+        smtp_cls.return_value.__exit__.side_effect = smtplib.SMTPResponseException(421, b"bye")
+        assert "odeslán" in call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    assert repos.leads.get(rid(1))["status"] == "contacted"
 
 
 def test_opt_out_can_only_be_lifted_by_a_person(registry):
