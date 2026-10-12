@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import re
 import sys
 from typing import Any
 
@@ -12,10 +14,12 @@ import anthropic
 
 from . import __version__
 from .agent import Agent, AgentEvents, format_services
+from .airtable import LEADS, AirtableClient, AirtableError, setup_base
 from .config import EFFORT_LEVELS, SEND_MODES, Config
-from .airtable import AirtableClient, AirtableError, LEADS, setup_base
-from .repos import airtable_repos
-from .tools import build_registry
+from .repos import airtable_repos, redact
+from .tools import ToolError, build_registry
+
+EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_INTERRUPTED = 0, 1, 2, 130
 
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
@@ -40,18 +44,31 @@ def red(text: str) -> str:
     return _c("31", text)
 
 
+# Escape sequences and carriage returns from model output or web pages could rewrite what the
+# terminal shows, e.g. hide the real recipient in an approval prompt.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def safe(text: str) -> str:
+    return _CONTROL.sub("�", text)
+
+
+def err(text: str) -> None:
+    print(red(text), file=sys.stderr)
+
+
 def _short(value: Any, limit: int = 300) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    text = text.replace("\n", " ⏎ ")
+    text = value if isinstance(value, str) else json.dumps(redact(value), ensure_ascii=False)
+    text = safe(text.replace("\n", " ⏎ "))
     return text if len(text) <= limit else text[:limit] + "…"
 
 
 class ConsoleEvents(AgentEvents):
     def on_text(self, text: str) -> None:
-        print(f"\n{text}\n")
+        print(f"\n{safe(text)}\n")
 
     def on_thinking(self, text: str) -> None:
-        print(dim(f"💭 {text}"))
+        print(dim(f"💭 {safe(text)}"))
 
     def on_tool_call(self, name: str, tool_input: dict[str, Any]) -> None:
         print(dim(f"→ {name} {_short(tool_input)}"))
@@ -64,17 +81,18 @@ class ConsoleEvents(AgentEvents):
         print(dim(f"→ {name} {_short(tool_input)}"))
 
     def on_notice(self, text: str) -> None:
-        print(yellow(f"! {text}"))
+        print(yellow(f"! {safe(text)}"))
 
 
 def interactive_approver(name: str, tool_input: dict[str, Any]) -> bool:
-    print(yellow(f"\nAgent chce provést akci: {bold(name)}"))
-    for key, value in tool_input.items():
+    print(yellow(f"\nAgent chce provést akci: {bold(safe(name))}"))
+    for key, value in redact(tool_input).items():
         text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
-        print(f"  {key}: {text}")
+        print(f"  {safe(str(key))}: {safe(text)}")
     try:
         answer = input(yellow("Povolit? [a/N] ")).strip().lower()
-    except EOFError:
+    except (EOFError, KeyboardInterrupt):
+        print()
         return False
     return answer in ("a", "ano", "y", "yes")
 
@@ -87,6 +105,10 @@ def noninteractive_approver(name: str, tool_input: dict[str, Any]) -> bool:
 
 
 def auto_approver(name: str, tool_input: dict[str, Any]) -> bool:
+    if name == "send_email":
+        # --yes must not become a way around the approved-draft guard of the auto send mode.
+        print(yellow("! --yes neschvaluje e-maily. Pro odesílání bez dozoru použijte AIAGENT_SEND_MODE=auto."))
+        return False
     print(yellow(f"! Automaticky schváleno: {name}"))
     return True
 
@@ -139,10 +161,9 @@ def chat(agent: Agent) -> None:
             continue
         if user_input == "/tools":
             for tool in agent.registry.tools:
-                mark = {True: " (schválení)", False: ""}.get(tool.needs_approval, " (schválení u ne-GET)")
-                print(f"  {tool.name}{dim(mark)}")
-            for tool in agent.registry.server_tools:
-                print(f"  {tool['name']}{dim(' (server)')}")
+                print(f"  {tool.name}{dim(' (schválení)') if tool.needs_approval else ''}")
+            for server_tool in agent.registry.server_tools:
+                print(f"  {server_tool['name']}{dim(' (server)')}")
             continue
         if user_input in ("/profil", "/profile"):
             agent.reset()
@@ -157,57 +178,60 @@ def chat(agent: Agent) -> None:
             print(dim("(Profil a služby znovu načteny, konverzace začíná znovu.)"))
             continue
         if user_input in ("/leads", "/tasks"):
-            tool = agent.registry.get("list_leads" if user_input == "/leads" else "list_tasks")
+            listing = agent.registry.get("list_leads" if user_input == "/leads" else "list_tasks")
             try:
-                print(tool.handler())
-            except AirtableError as exc:
-                print(red(str(exc)))
+                print(safe(listing.handler()) if listing else "Nedostupné.")
+            except (AirtableError, ToolError) as exc:
+                err(str(exc))
             continue
         run_safely(agent, user_input)
 
 
-def run_safely(agent: Agent, task: str) -> bool:
+def run_safely(agent: Agent, task: str) -> int:
+    """Run one task; return an exit code (0 = finished, 1 = error/unfinished, 130 = Ctrl+C)."""
     try:
         agent.run(task)
-        return True
+        return EXIT_OK if agent.outcome == "done" else EXIT_ERROR
     except KeyboardInterrupt:
         print(yellow("\n! Přerušeno."))
+        return EXIT_INTERRUPTED
     except anthropic.AuthenticationError:
-        print(red("Neplatný API klíč. Nastavte ANTHROPIC_API_KEY (viz .env.example)."))
+        err("Neplatný API klíč. Nastavte ANTHROPIC_API_KEY (viz .env.example).")
     except anthropic.PermissionDeniedError as exc:
-        print(red(f"Klíč nemá oprávnění: {exc.message}"))
+        err(f"Klíč nemá oprávnění: {exc.message} (request id: {exc.request_id})")
     except anthropic.NotFoundError as exc:
-        print(red(f"Model nebo endpoint nenalezen: {exc.message}"))
-    except anthropic.RateLimitError:
-        print(red("Překročen limit požadavků, zkuste to za chvíli."))
+        err(f"Model nebo endpoint nenalezen: {exc.message} (request id: {exc.request_id})")
+    except anthropic.RateLimitError as exc:
+        err(f"Překročen limit požadavků, zkuste to za chvíli. (request id: {exc.request_id})")
     except anthropic.BadRequestError as exc:
-        print(red(f"Chybný požadavek: {exc.message}"))
+        err(f"Chybný požadavek: {exc.message} (request id: {exc.request_id})")
     except anthropic.APIStatusError as exc:
-        print(red(f"Chyba API ({exc.status_code}): {exc.message}"))
+        err(f"Chyba API ({exc.status_code}): {exc.message} (request id: {exc.request_id})")
+    except anthropic.APITimeoutError:
+        err("API neodpovědělo včas. Zkuste to znovu, případně snižte AIAGENT_EFFORT.")
     except anthropic.APIConnectionError:
-        print(red("Nepodařilo se spojit s API. Zkontrolujte připojení."))
+        err("Nepodařilo se spojit s API. Zkontrolujte připojení.")
     except AirtableError as exc:
-        print(red(str(exc)))
+        err(str(exc))
     except TypeError as exc:
         # The SDK raises a plain TypeError when no credentials are configured at all.
         if "authentication" not in str(exc):
             raise
-        print(red("Chybí API klíč. Nastavte ANTHROPIC_API_KEY (viz .env.example)."))
-    return False
+        err("Chybí API klíč. Nastavte ANTHROPIC_API_KEY (viz .env.example).")
+    return EXIT_ERROR
 
 
 def smtp_test(config: Config, test_to: str | None) -> int:
-    from .tools import ToolError
     from .tools.mail import smtp_check
 
     if config.smtp is None:
-        print(red("SMTP není nastavené. Doplňte SMTP_HOST, SMTP_USER, SMTP_PASSWORD a SMTP_FROM do .env."))
-        return 2
+        err("SMTP není nastavené. Doplňte SMTP_HOST, SMTP_USER, SMTP_PASSWORD a SMTP_FROM do .env.")
+        return EXIT_CONFIG
     try:
         print(smtp_check(config.smtp, test_to))
     except ToolError as exc:
-        print(red(str(exc)))
-        return 1
+        err(str(exc))
+        return EXIT_ERROR
     print(dim(f"Režim odesílání: {config.send_mode}"))
     return 0
 
@@ -218,30 +242,27 @@ def airtable_setup(config: Config) -> int:
         for line in setup_base(client, config.timezone):
             print(line)
     except AirtableError as exc:
-        print(red(str(exc)))
-        if "403" in str(exc):
-            print(dim("Token potřebuje oprávnění schema.bases:read a schema.bases:write."))
-        return 1
+        err(str(exc))
+        if exc.status == 403:
+            print(dim("Token potřebuje oprávnění schema.bases:read a schema.bases:write."), file=sys.stderr)
+        return EXIT_ERROR
     print("Airtable je připravený.")
-    return 0
+    return EXIT_OK
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="aiagent", description="AI obchodník: hledá potenciální zákazníky a píše jim nabídky.")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="aiagent", description="AI obchodník: hledá potenciální zákazníky a píše jim nabídky."
+    )
     parser.add_argument("--version", action="version", version=f"aiagent {__version__}")
     parser.add_argument("--model", help="model Claude (výchozí z AIAGENT_MODEL)")
     parser.add_argument("--effort", choices=EFFORT_LEVELS, help="hloubka uvažování")
     parser.add_argument("--show-thinking", action="store_true", help="zobrazovat shrnutí uvažování")
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="schvalovat všechny akce automaticky (opatrně!)",
-    )
-    parser.add_argument(
-        "--send-mode",
-        choices=SEND_MODES,
-        help="odesílání e-mailů: off = jen návrhy, approve = se schválením, auto = bez schválení",
-    )
+    parser.add_argument("--yes", action="store_true",
+                        help="schvalovat všechny akce kromě odeslání e-mailu automaticky (opatrně!)")
+    parser.add_argument("--send-mode", choices=SEND_MODES,
+                        help="odesílání e-mailů: off = jen návrhy, approve = se schválením, "
+                             "auto = jen návrhy schválené v Airtable, bez dotazu")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("airtable-setup", help="vytvořit v Airtable tabulky a pole, která agent potřebuje")
     smtp_parser = sub.add_parser("smtp-test", help="ověřit připojení k SMTP serveru")
@@ -249,24 +270,56 @@ def main(argv: list[str] | None = None) -> int:
     run_parser = sub.add_parser("run", help="provést jeden úkol a skončit (vhodné pro cron)")
     run_parser.add_argument("task", nargs="?", help="zadání úkolu")
     run_parser.add_argument("-f", "--file", help="načíst zadání ze souboru ('-' = stdin)")
+    return parser
+
+
+def setup_logging() -> None:
+    level = (os.environ.get("AIAGENT_LOG_LEVEL") or "WARNING").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.WARNING),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
+def read_task(args: argparse.Namespace) -> str | None:
+    if not args.file:
+        return args.task
+    if args.file == "-":
+        return sys.stdin.read()
+    try:
+        with open(args.file, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as exc:
+        err(f"Soubor se zadáním nelze přečíst: {exc}")
+        return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        print()
+        return EXIT_INTERRUPTED
+
+
+def _main(argv: list[str] | None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     try:
         config = Config.from_env()
-    except ValueError as exc:
-        print(red(str(exc)), file=sys.stderr)
-        return 2
-    if args.model:
-        config.model = args.model
-    if args.effort:
-        config.effort = args.effort
-    if args.send_mode:
-        config.send_mode = args.send_mode
-    try:
+        if args.model:
+            config.model = args.model
+        if args.effort:
+            config.effort = args.effort
+        if args.send_mode:
+            config.send_mode = args.send_mode
         config.validate()
     except ValueError as exc:
-        print(red(str(exc)), file=sys.stderr)
-        return 2
+        err(str(exc))
+        return EXIT_CONFIG
+    setup_logging()
 
     if args.command == "smtp-test":
         return smtp_test(config, args.to)
@@ -274,19 +327,27 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config.validate_airtable()
     except ValueError as exc:
-        print(red(str(exc)), file=sys.stderr)
-        return 2
+        err(str(exc))
+        return EXIT_CONFIG
     if args.command == "airtable-setup":
         return airtable_setup(config)
+
+    task = None
+    if args.command == "run":
+        task = read_task(args)
+        if task is None:
+            return EXIT_CONFIG
+        if not task.strip():
+            parser.error("zadejte úkol jako argument nebo přes --file")
 
     client = AirtableClient(config.airtable_token, config.airtable_base_id)
     try:
         client.list_records(LEADS, fields=["Firma"], max_records=1)
     except AirtableError as exc:
-        print(red(str(exc)), file=sys.stderr)
-        if "404" in str(exc) or "422" in str(exc):
+        err(str(exc))
+        if exc.status in (404, 422):
             print(dim("Tabulky vytvoříte příkazem: aiagent airtable-setup"), file=sys.stderr)
-        return 2
+        return EXIT_CONFIG
     repos = airtable_repos(client, config.timezone)
 
     if args.yes:
@@ -307,17 +368,10 @@ def main(argv: list[str] | None = None) -> int:
         show_thinking=args.show_thinking,
     )
 
-    if args.command == "run":
-        if args.file:
-            task = sys.stdin.read() if args.file == "-" else open(args.file, encoding="utf-8").read()
-        else:
-            task = args.task
-        if not task or not task.strip():
-            run_parser.error("zadejte úkol jako argument nebo přes --file")
-        return 0 if run_safely(agent, task.strip()) else 1
-
+    if task is not None:
+        return run_safely(agent, task.strip())
     chat(agent)
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

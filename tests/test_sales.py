@@ -4,9 +4,8 @@ import pytest
 
 from aiagent.agent import build_system_prompt
 from aiagent.config import SmtpConfig
-from aiagent.tools import ToolError, build_registry
-from aiagent.tools import ares
-from conftest import call
+from aiagent.tools import ToolError, ares, build_registry
+from conftest import call, rid
 
 
 @pytest.fixture
@@ -32,10 +31,10 @@ def add_lead(registry, **kwargs):
 # --- leads ---------------------------------------------------------------
 
 def test_save_lead_and_deduplicate(registry):
-    assert "Uloženo: rec00001" in add_lead(registry)
+    assert "Uloženo: rec00000000000001" in add_lead(registry)
     assert "už existuje" in add_lead(registry, ico=None, email=None, website="http://alfa.cz/o-nas")
     assert "už existuje" in add_lead(registry, ico="2", email="INFO@alfa.cz", website=None)
-    assert "Uloženo: rec00002" in add_lead(registry, company="Beta", ico="22222222",
+    assert "Uloženo: rec00000000000002" in add_lead(registry, company="Beta", ico="22222222",
                                            website="beta.cz", email="obchod@beta.cz")
 
 
@@ -46,26 +45,26 @@ def test_email_requires_source(registry):
 
 def test_update_lead_validation(registry):
     add_lead(registry)
-    assert "[do_not_contact]" in call(registry, "update_lead", id="rec00001", status="do_not_contact")
+    assert "[do_not_contact]" in call(registry, "update_lead", id="rec00000000000001", status="do_not_contact")
     with pytest.raises(ToolError):
-        call(registry, "update_lead", id="rec00001", status="hotovo")
+        call(registry, "update_lead", id="rec00000000000001", status="hotovo")
     with pytest.raises(ToolError):
-        call(registry, "update_lead", id="rec99999", notes="x")
+        call(registry, "update_lead", id="rec99999999999999", notes="x")
 
 
 def test_save_draft(registry, repos):
     add_lead(registry)
-    out = call(registry, "save_draft", id="rec00001", subject="Spolupráce", body="Dobrý den, ...")
+    out = call(registry, "save_draft", id="rec00000000000001", subject="Spolupráce", body="Dobrý den, ...")
     assert "Airtable" in out
-    lead = repos.leads.get("rec00001")
+    lead = repos.leads.get("rec00000000000001")
     assert lead["status"] == "drafted" and lead["draft"]["subject"] == "Spolupráce"
-    assert "Dobrý den" in call(registry, "get_lead", id="rec00001")
+    assert "Dobrý den" in call(registry, "get_lead", id="rec00000000000001")
 
 
 def test_no_draft_for_do_not_contact(registry):
     add_lead(registry, status="do_not_contact")
     with pytest.raises(ToolError):
-        call(registry, "save_draft", id="rec00001", subject="x", body="y")
+        call(registry, "save_draft", id="rec00000000000001", subject="x", body="y")
 
 
 def test_list_leads_filters(registry):
@@ -82,36 +81,101 @@ def test_list_leads_filters(registry):
 def test_send_email_records_history(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)
     add_lead(registry)
-    out = call(registry, "send_email", lead_id="rec00001", to="info@alfa.cz", subject="Nabídka", body="Text")
+    out = call(registry, "send_email", lead_id="rec00000000000001", to="info@alfa.cz", subject="Nabídka", body="Text")
     assert "odeslán" in out
     sent = fake_smtp.send_message.call_args[0][0]
     assert sent["To"] == "info@alfa.cz" and sent["From"] == "obchod@priklad.cz"
-    lead = repos.leads.get("rec00001")
+    lead = repos.leads.get("rec00000000000001")
     assert lead["status"] == "contacted" and lead["last_contacted"]
-    assert repos.leads.emails("rec00001")[0]["subject"] == "Nabídka"
-    assert "odesláno" in call(registry, "get_lead", id="rec00001")
+    assert repos.leads.emails("rec00000000000001")[0]["subject"] == "Nabídka"
+    assert "odesláno" in call(registry, "get_lead", id="rec00000000000001")
 
 
 def test_send_refuses_second_contact_without_follow_up(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)
     add_lead(registry)
-    call(registry, "send_email", lead_id="rec00001", to="info@alfa.cz", subject="A", body="x")
+    call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="A", body="x")
+    with pytest.raises(ToolError, match="v tomto běhu"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="B", body="x", follow_up=True)
+    # A later session: needs an explicit follow_up.
+    registry = build_registry(smtp_config, repos)
     with pytest.raises(ToolError, match="už byl osloven"):
-        call(registry, "send_email", lead_id="rec00001", to="info@alfa.cz", subject="B", body="x")
-    call(registry, "send_email", lead_id="rec00001", to="info@alfa.cz", subject="B", body="x", follow_up=True)
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="B", body="x")
+    call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="B", body="x", follow_up=True)
     assert fake_smtp.send_message.call_count == 2
 
 
 def test_send_refuses_do_not_contact(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)
     add_lead(registry, status="do_not_contact")
-    add_lead(registry, company="Alfa pobočka", ico="3", email=None, website=None)
+    # Added by hand in Airtable (save_lead would reject it as a duplicate of the same domain).
+    repos.leads.create({"company": "Alfa pobočka", "email": "jan@alfa.cz", "status": "qualified"})
     with pytest.raises(ToolError, match="nepřeje"):
-        call(registry, "send_email", lead_id="rec00001", to="info@alfa.cz", subject="x", body="y")
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
     # Another address at the same company domain is suppressed too.
     with pytest.raises(ToolError, match="nepřeje"):
-        call(registry, "send_email", lead_id="rec00002", to="jan@alfa.cz", subject="x", body="y")
+        call(registry, "send_email", lead_id=rid(2), to="jan@alfa.cz", subject="x", body="y")
     fake_smtp.send_message.assert_not_called()
+
+
+def test_email_only_opt_out_blocks_company_domain(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry, company="Gama", ico="5", website=None, email="info@gama.cz", status="do_not_contact")
+    assert "už existuje" in add_lead(registry, company="Gama obchod", ico="6", website=None,
+                                     email="obchod@gama.cz")
+    repos.leads.create({"company": "Gama obchod", "email": "obchod@gama.cz", "status": "qualified"})
+    with pytest.raises(ToolError, match="nepřeje"):
+        call(registry, "send_email", lead_id=rid(2), to="obchod@gama.cz", subject="x", body="y")
+
+
+def test_freemail_domain_is_not_a_company(registry):
+    add_lead(registry, company="Pekař", ico="7", website=None, email="pekar@seznam.cz")
+    out = add_lead(registry, company="Řezník", ico="8", website=None, email="reznik@seznam.cz",
+                   email_source="https://reznik.cz")
+    assert out.startswith("Uloženo")
+
+
+def test_ico_is_normalized_for_duplicates(registry):
+    add_lead(registry, ico="123 45 678")
+    assert "už existuje" in add_lead(registry, company="X", ico="12345678", website=None, email=None)
+    add_lead(registry, company="Y", ico="12345", website="y.cz", email=None)
+    assert "už existuje" in add_lead(registry, company="Y2", ico="00012345", website=None, email=None)
+
+
+def test_send_only_to_the_leads_address(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    for to in ("utocnik@evil.com", "info@alfa.cz, dalsi@firma.cz", "info@alfa.cz; x@y.cz"):
+        with pytest.raises(ToolError):
+            call(registry, "send_email", lead_id=rid(1), to=to, subject="x", body="y")
+    fake_smtp.send_message.assert_not_called()
+    call(registry, "send_email", lead_id=rid(1), to="Alfa <INFO@alfa.cz>", subject="x", body="y")
+    assert fake_smtp.send_message.call_args[0][0]["To"] == "info@alfa.cz"
+
+
+def test_not_interested_is_not_contacted(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry, status="not_interested")
+    with pytest.raises(ToolError, match="nepřeje"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+
+
+def test_sent_email_is_not_resent_when_recording_fails(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with mock.patch.object(repos.leads, "update", side_effect=RuntimeError("Airtable 503")):
+        out = call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    assert "BYL odeslán" in out and "Neodesílej" in out
+    with pytest.raises(ToolError, match="v tomto běhu"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    assert fake_smtp.send_message.call_count == 1
+
+
+def test_opt_out_can_only_be_lifted_by_a_person(registry):
+    add_lead(registry, status="do_not_contact")
+    with pytest.raises(ToolError, match="jen uživatel"):
+        call(registry, "update_lead", id=rid(1), status="qualified")
+    assert "Upraveno" in call(registry, "update_lead", id=rid(1), notes="Odhlásil se 12. 10.")
 
 
 def test_daily_limit(smtp_config, repos, fake_smtp):
@@ -119,9 +183,9 @@ def test_daily_limit(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)
     add_lead(registry)
     add_lead(registry, company="Beta", ico="2", website="beta.cz", email="a@beta.cz")
-    call(registry, "send_email", lead_id="rec00001", to="info@alfa.cz", subject="x", body="y")
+    call(registry, "send_email", lead_id="rec00000000000001", to="info@alfa.cz", subject="x", body="y")
     with pytest.raises(ToolError, match="limit"):
-        call(registry, "send_email", lead_id="rec00002", to="a@beta.cz", subject="x", body="y")
+        call(registry, "send_email", lead_id="rec00000000000002", to="a@beta.cz", subject="x", body="y")
 
 
 def test_send_requires_approval(smtp_config, repos):
@@ -175,7 +239,8 @@ def test_system_prompt_without_profile(config):
 
 def test_profile_formatting_and_agent_loading(config, repos):
     from aiagent.agent import Agent
-    from aiagent.repos import MemoryProfile, format_profile
+    from aiagent.repos import format_profile
+    from memory_repos import MemoryProfile
 
     assert format_profile({}) is None and format_profile({"Firma": "  "}) is None
     repos.profile = MemoryProfile({"Firma": "Příklad s.r.o.", "Podpis": "Jan Novák\nPříklad s.r.o.",
@@ -191,7 +256,7 @@ def test_profile_formatting_and_agent_loading(config, repos):
 # --- services ------------------------------------------------------------------------
 
 SERVICES = [
-    {"id": "recS1", "name": "Audit skladu", "description": "Projdeme sklad a navrhneme úspory.",
+    {"id": "recSERVICE0000001", "name": "Audit skladu", "description": "Projdeme sklad a navrhneme úspory.",
      "target": "E-shopy s vlastním skladem", "benefits": "Rychlejší expedice", "price": "od 15 000 Kč",
      "references": "Firma X: -40 % času expedice", "url": "https://priklad.cz/audit",
      "instructions": "Nezmiňuj cenu v prvním e-mailu."},
@@ -200,7 +265,7 @@ SERVICES = [
 
 def test_system_prompt_lists_services(config):
     prompt = build_system_prompt(config, sending_enabled=False, services=SERVICES)
-    assert "### Audit skladu (service_id: recS1)" in prompt
+    assert "### Audit skladu (service_id: recSERVICE0000001)" in prompt
     assert "- Pro koho: E-shopy s vlastním skladem" in prompt
     assert "- Pokyny pro agenta: Nezmiňuj cenu v prvním e-mailu." in prompt
     assert "Nabízej jen tyto služby" in prompt
@@ -212,11 +277,11 @@ def test_system_prompt_without_services(config):
 
 def test_draft_records_offered_service(registry, repos):
     add_lead(registry)
-    call(registry, "save_draft", id="rec00001", subject="S", body="B", service_id="recS1")
-    assert repos.leads.get("rec00001")["service_id"] == "recS1"
-    assert "service_id: recS1" in call(registry, "get_lead", id="rec00001")
+    call(registry, "save_draft", id="rec00000000000001", subject="S", body="B", service_id="recSERVICE0000001")
+    assert repos.leads.get("rec00000000000001")["service_id"] == "recSERVICE0000001"
+    assert "service_id: recSERVICE0000001" in call(registry, "get_lead", id="rec00000000000001")
     with pytest.raises(ToolError, match="service_id"):
-        call(registry, "save_draft", id="rec00001", subject="S", body="B", service_id="Audit skladu")
+        call(registry, "save_draft", id="rec00000000000001", subject="S", body="B", service_id="Audit skladu")
 
 
 def test_agent_loads_and_reloads_services(config, repos):

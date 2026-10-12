@@ -49,7 +49,7 @@ def _request(url: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
 
 def _summary(subject: dict[str, Any]) -> str:
     sidlo = subject.get("sidlo") or {}
-    legal = subject.get("pravniForma")
+    legal = str(subject.get("pravniForma") or "")
     parts = [
         f"{subject.get('obchodniJmeno', '?')} (IČO {subject.get('ico', '—')})",
         f"sídlo: {sidlo.get('textovaAdresa', '—')}",
@@ -101,8 +101,9 @@ def build(config: Config) -> list[Tool]:
         lines = [_summary(subject)]
         if subject.get("dic"):
             lines.append(f"DIČ: {subject['dic']}")
-        if subject.get("czNace2008") or subject.get("czNace"):
-            lines.append(f"CZ-NACE: {', '.join(subject.get('czNace2008') or subject.get('czNace'))}")
+        nace_codes = subject.get("czNace2008") or subject.get("czNace") or []
+        if nace_codes:
+            lines.append(f"CZ-NACE: {', '.join(str(code) for code in nace_codes)}")
         return "\n".join(lines)
 
     return [
@@ -120,11 +121,13 @@ def build(config: Config) -> list[Tool]:
             ),
             input_schema=schema(
                 {
-                    "name": {"type": "string"},
-                    "city": {"type": "string"},
-                    "nace": {"type": "array", "items": {"type": "string"}},
-                    "legal_form": {"type": "array", "items": {"type": "string"}},
-                    "offset": {"type": "integer"},
+                    "name": {"type": "string", "description": "Část obchodního jména."},
+                    "city": {"type": "string", "description": "Město sídla, např. 'Brno'."},
+                    "nace": {"type": "array", "items": {"type": "string"},
+                             "description": "Dvoumístné oddíly CZ-NACE, např. ['62']."},
+                    "legal_form": {"type": "array", "items": {"type": "string"},
+                                   "description": "Kódy právní formy, např. ['112'] pro s.r.o."},
+                    "offset": {"type": "integer", "description": "Posun pro stránkování, výchozí 0."},
                     "limit": {"type": "integer", "description": "1–50, výchozí 20"},
                 }
             ),
@@ -133,7 +136,7 @@ def build(config: Config) -> list[Tool]:
         Tool(
             name="ares_company",
             description="Detail firmy z ARES podle IČO: sídlo, právní forma, datum vzniku, DIČ, obory CZ-NACE.",
-            input_schema=schema({"ico": {"type": "string"}}, ["ico"]),
+            input_schema=schema({"ico": {"type": "string", "description": "IČO (až 8 číslic)."}}, ["ico"]),
             handler=ares_company,
         ),
     ]

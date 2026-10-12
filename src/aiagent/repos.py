@@ -1,9 +1,12 @@
-"""Data repositories. Production data lives in Airtable; the in-memory versions are for tests."""
+"""Airtable-backed repositories for everything the agent reads and stores.
+
+Tests use in-memory doubles with the same interface (tests/memory_repos.py).
+"""
 
 from __future__ import annotations
 
-import itertools
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -32,205 +35,19 @@ LEAD_FIELDS = {
 }
 LEAD_STATUS_CODES = {label: code for code, label in at.LEAD_STATUS_LABELS.items()}
 TASK_STATUS_CODES = {label: code for code, label in at.TASK_STATUS_LABELS.items()}
+SEARCH_FIELDS = ("company", "city", "industry", "email", "website", "notes")
 
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def domain(url_or_email: str | None) -> str:
-    if not url_or_email:
-        return ""
-    value = url_or_email.strip().lower()
-    if "@" in value and "://" not in value:
-        value = value.split("@", 1)[1]
-    else:
-        value = urlparse(value if "://" in value else f"http://{value}").netloc
-    return value.removeprefix("www.")
-
-
-def local_day(iso: str, tz: str) -> str:
-    moment = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    return moment.astimezone(ZoneInfo(tz)).date().isoformat()
-
-
-def _matches(lead: dict[str, Any], query: str) -> bool:
-    haystack = " ".join(
-        str(lead.get(k) or "") for k in ("company", "city", "industry", "email", "website", "notes")
-    )
-    return query.lower() in haystack.lower()
-
-
-# --- in-memory (tests) --------------------------------------------------------------
-
-
-class MemoryLeads:
-    def __init__(self, tz: str = "Europe/Prague"):
-        self.tz = tz
-        self.leads: dict[str, dict[str, Any]] = {}
-        self.sent: list[dict[str, Any]] = []
-        self._ids = itertools.count(1)
-
-    def create(self, lead: dict[str, Any]) -> dict[str, Any]:
-        lead = {"service_id": None, **lead, "id": f"rec{next(self._ids):05d}", "domain": domain(lead.get("website")),
-                "draft": None, "last_contacted": None, "created_at": now_iso(), "updated_at": now_iso()}
-        self.leads[lead["id"]] = lead
-        return dict(lead)
-
-    def get(self, lead_id: str) -> dict[str, Any]:
-        if lead_id not in self.leads:
-            raise ToolError(f"Lead {lead_id} neexistuje.")
-        return dict(self.leads[lead_id])
-
-    def update(self, lead_id: str, changes: dict[str, Any]) -> dict[str, Any]:
-        lead = self.leads.get(lead_id)
-        if lead is None:
-            raise ToolError(f"Lead {lead_id} neexistuje.")
-        lead.update(changes, updated_at=now_iso())
-        if "website" in changes:
-            lead["domain"] = domain(changes["website"])
-        return dict(lead)
-
-    def find_duplicate(self, ico: str | None, email: str | None, website: str | None):
-        dom = domain(website)
-        for lead in self.leads.values():
-            if (ico and lead.get("ico") == ico) or (email and (lead.get("email") or "").lower() == email.lower()) \
-                    or (dom and lead.get("domain") == dom):
-                return dict(lead)
-        return None
-
-    def is_suppressed(self, email: str) -> bool:
-        email = email.strip().lower()
-        return any(
-            lead["status"] == "do_not_contact"
-            and ((lead.get("email") or "").lower() == email or (lead.get("domain") and lead["domain"] == domain(email)))
-            for lead in self.leads.values()
-        )
-
-    def search(self, status: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
-        leads = list(self.leads.values())
-        if status:
-            leads = [lead for lead in leads if lead["status"] == status]
-        if query:
-            leads = [lead for lead in leads if _matches(lead, query)]
-        return [dict(lead) for lead in leads]
-
-    def status_counts(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for lead in self.leads.values():
-            counts[lead["status"]] = counts.get(lead["status"], 0) + 1
-        return counts
-
-    def add_email(self, lead_id: str, to: str, subject: str, body: str, sent_at: str) -> None:
-        self.sent.append({"lead_id": lead_id, "to": to, "subject": subject, "body": body, "sent_at": sent_at})
-
-    def emails(self, lead_id: str) -> list[dict[str, Any]]:
-        return [e for e in self.sent if e["lead_id"] == lead_id]
-
-    def sent_count(self, day: str) -> int:
-        return sum(1 for e in self.sent if local_day(e["sent_at"], self.tz) == day)
-
-
-class MemoryProfile:
-    def __init__(self, fields: dict[str, Any] | None = None):
-        self.fields = fields or {}
-
-    def load(self) -> str | None:
-        return format_profile(self.fields)
-
-
-class MemoryServices:
-    def __init__(self, services: list[dict[str, Any]] | None = None):
-        self.services = services or []
-
-    def list_active(self) -> list[dict[str, Any]]:
-        return [dict(s) for s in self.services]
-
-
-class MemoryTasks:
-    def __init__(self):
-        self.tasks: dict[str, dict[str, Any]] = {}
-        self._ids = itertools.count(1)
-
-    def create(self, title: str, due: str | None, notes: str | None) -> dict[str, Any]:
-        task = {"id": f"rec{next(self._ids):05d}", "title": title, "status": "todo", "due": due, "notes": notes}
-        self.tasks[task["id"]] = task
-        return dict(task)
-
-    def list(self, status: str | None = None) -> list[dict[str, Any]]:
-        if status:
-            return [dict(t) for t in self.tasks.values() if t["status"] == status]
-        return [dict(t) for t in self.tasks.values() if t["status"] not in ("done", "cancelled")]
-
-    def update(self, task_id: str, changes: dict[str, Any]) -> dict[str, Any]:
-        if task_id not in self.tasks:
-            raise ToolError(f"Úkol {task_id} neexistuje.")
-        self.tasks[task_id].update(changes)
-        return dict(self.tasks[task_id])
-
-
-class MemoryAudit:
-    def __init__(self):
-        self.records: list[dict[str, Any]] = []
-
-    def log(self, tool: str, tool_input: dict[str, Any], approved: bool | None, is_error: bool) -> None:
-        self.records.append({"tool": tool, "input": tool_input, "approved": approved, "error": is_error})
-
-
-# --- Airtable -------------------------------------------------------------------------
-
-
-def _lead_from_record(record: dict[str, Any]) -> dict[str, Any]:
-    f = record.get("fields", {})
-    lead = {key: f.get(name) for key, name in LEAD_FIELDS.items()}
-    lead["id"] = record["id"]
-    lead["company"] = lead["company"] or "(bez názvu)"
-    lead["status"] = LEAD_STATUS_CODES.get(f.get("Stav"), "new")
-    lead["service_id"] = (f.get("Služba") or [None])[0]
-    lead["draft"] = (
-        {"subject": f.get("Předmět návrhu", ""), "body": f.get("Text návrhu", ""), "updated_at": f.get("Návrh upraven")}
-        if f.get("Text návrhu") else None
-    )
-    return lead
-
-
-def _lead_to_fields(changes: dict[str, Any]) -> dict[str, Any]:
-    fields: dict[str, Any] = {}
-    for key, value in changes.items():
-        if key == "status":
-            fields["Stav"] = at.LEAD_STATUS_LABELS[value]
-        elif key == "service_id":
-            fields["Služba"] = [value] if value else []
-        elif key == "draft":
-            draft = value or {}
-            fields["Předmět návrhu"] = draft.get("subject")
-            fields["Text návrhu"] = draft.get("body")
-            fields["Návrh upraven"] = draft.get("updated_at")
-        elif key in LEAD_FIELDS:
-            fields[LEAD_FIELDS[key]] = value if value != "" else None
-        else:
-            raise ValueError(f"Neznámé pole leadu: {key}")
-    if "website" in changes:
-        fields["Doména"] = domain(changes["website"]) or None
-    return fields
-
+# Shared mailbox providers: their domain says nothing about the company.
+FREEMAIL = {
+    "gmail.com", "googlemail.com", "seznam.cz", "email.cz", "post.cz", "centrum.cz", "atlas.cz",
+    "volny.cz", "tiscali.cz", "quick.cz", "outlook.com", "hotmail.com", "live.com", "yahoo.com",
+    "icloud.com", "me.com", "gmx.com", "gmx.net", "proton.me", "protonmail.com",
+}
 
 PROFILE_FIELDS = (
     "Firma", "IČO", "Web", "O nás", "Čím se lišíme", "Ideální zákazník", "Koho neoslovovat",
     "Obecné reference", "Výzva k akci", "Tón e-mailů", "Podpis",
 )
-
-
-def format_profile(fields: dict[str, Any]) -> str | None:
-    """Render the profile record for the system prompt; None if it is empty."""
-    parts = []
-    for name in PROFILE_FIELDS:
-        value = str(fields.get(name) or "").strip()
-        if value:
-            parts.append(f"### {name}\n{value}")
-    return "\n\n".join(parts) or None
-
-
 SERVICE_FIELDS = {
     "name": "Název",
     "description": "Popis",
@@ -243,6 +60,108 @@ SERVICE_FIELDS = {
 }
 
 
+# --- helpers -------------------------------------------------------------------------------
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def domain(url_or_email: str | None) -> str:
+    """Host part of a URL or e-mail address, lower-case, without www. and port."""
+    if not url_or_email:
+        return ""
+    value = url_or_email.strip().lower()
+    if "@" in value and "://" not in value:
+        host = value.rsplit("@", 1)[1]
+    else:
+        host = urlparse(value if "://" in value else f"http://{value}").hostname or ""
+    return host.strip(" >.").removeprefix("www.")
+
+
+def company_domain(website: str | None, email: str | None) -> str:
+    """Domain identifying the company: from its website, else from a non-freemail address."""
+    host = domain(website)
+    if host:
+        return host
+    host = domain(email)
+    return "" if host in FREEMAIL else host
+
+
+def normalize_ico(ico: str | None) -> str | None:
+    if not ico:
+        return None
+    digits = re.sub(r"\D", "", ico)
+    return digits.zfill(8) if digits else None
+
+
+def local_day(iso: str, tz: str) -> str:
+    moment = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    return moment.astimezone(ZoneInfo(tz)).date().isoformat()
+
+
+def format_profile(fields: dict[str, Any]) -> str | None:
+    """Render the profile record for the system prompt; None if it is empty."""
+    parts = []
+    for name in PROFILE_FIELDS:
+        value = str(fields.get(name) or "").strip()
+        if value:
+            parts.append(f"### {name}\n{value}")
+    return "\n\n".join(parts) or None
+
+
+# --- leads ---------------------------------------------------------------------------------
+
+
+def _lead_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    f = record.get("fields", {})
+    lead = {key: f.get(name) for key, name in LEAD_FIELDS.items()}
+    lead["id"] = record["id"]
+    lead["company"] = lead["company"] or "(bez názvu)"
+    # A status label the agent doesn't know (renamed or custom in Airtable) fails closed.
+    stav = f.get("Stav")
+    lead["status"] = LEAD_STATUS_CODES.get(stav, "do_not_contact") if stav else "new"
+    lead["service_id"] = (f.get("Služba") or [None])[0]
+    lead["draft"] = (
+        {
+            "subject": f.get("Předmět návrhu", ""),
+            "body": f.get("Text návrhu", ""),
+            "updated_at": f.get("Návrh upraven"),
+            # Only a person can set this, in Airtable; no tool writes it.
+            "approved": f.get("Schválení návrhu") == at.DRAFT_APPROVED,
+        }
+        if f.get("Text návrhu") else None
+    )
+    return lead
+
+
+def _lead_to_fields(changes: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key, value in changes.items():
+        if key == "status":
+            fields["Stav"] = at.LEAD_STATUS_LABELS[value]
+        elif key == "service_id":
+            fields["Služba"] = [at.check_record_id(value)] if value else []
+        elif key == "draft":
+            draft = value or {}
+            fields["Předmět návrhu"] = draft.get("subject")
+            fields["Text návrhu"] = draft.get("body")
+            fields["Návrh upraven"] = draft.get("updated_at")
+            # A new or changed draft always needs a fresh human approval.
+            fields["Schválení návrhu"] = at.DRAFT_PENDING if value else None
+        elif key == "ico":
+            fields["IČO"] = normalize_ico(value)
+        elif key in LEAD_FIELDS:
+            fields[LEAD_FIELDS[key]] = value if value != "" else None
+        else:
+            raise ValueError(f"Neznámé pole leadu: {key}")
+    return fields
+
+
+def _not_found(exc: at.AirtableError, what: str) -> Exception:
+    return ToolError(f"{what} neexistuje.") if exc.status in (403, 404) else exc
+
+
 class AirtableLeads:
     def __init__(self, client: at.AirtableClient, tz: str):
         self.client = client
@@ -250,42 +169,52 @@ class AirtableLeads:
 
     def create(self, lead: dict[str, Any]) -> dict[str, Any]:
         fields = _lead_to_fields({k: v for k, v in lead.items() if v is not None})
+        fields["Doména"] = company_domain(lead.get("website"), lead.get("email")) or None
         fields["Vytvořeno"] = fields["Aktualizováno"] = now_iso()
         return _lead_from_record(self.client.create_record(at.LEADS, fields))
 
     def get(self, lead_id: str) -> dict[str, Any]:
-        if not lead_id.startswith("rec"):
-            raise ToolError(f"Neplatné ID leadu '{lead_id}' (Airtable ID začíná 'rec').")
         try:
             return _lead_from_record(self.client.get_record(at.LEADS, lead_id))
         except at.AirtableError as exc:
-            if "404" in str(exc):
-                raise ToolError(f"Lead {lead_id} neexistuje.") from exc
-            raise
+            raise _not_found(exc, f"Lead {lead_id}") from exc
 
     def update(self, lead_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         fields = _lead_to_fields(changes)
+        if "website" in changes or "email" in changes:
+            current = self.get(lead_id)
+            merged = {**current, **changes}
+            fields["Doména"] = company_domain(merged.get("website"), merged.get("email")) or None
         fields["Aktualizováno"] = now_iso()
-        return _lead_from_record(self.client.update_record(at.LEADS, lead_id, fields))
+        try:
+            return _lead_from_record(self.client.update_record(at.LEADS, lead_id, fields))
+        except at.AirtableError as exc:
+            raise _not_found(exc, f"Lead {lead_id}") from exc
 
     def find_duplicate(self, ico: str | None, email: str | None, website: str | None):
         clauses = []
-        if ico:
-            clauses.append(f"{{IČO}} = {at.esc(ico)}")
+        normalized_ico = normalize_ico(ico)
+        if normalized_ico:
+            clauses.append(f"{{IČO}} = {at.esc(normalized_ico)}")
         if email:
-            clauses.append(f"LOWER({{E-mail}}) = {at.esc(email.lower())}")
-        if domain(website):
-            clauses.append(f"{{Doména}} = {at.esc(domain(website))}")
+            clauses.append(f"LOWER({{E-mail}}) = {at.esc(email.strip().lower())}")
+        host = company_domain(website, email)
+        if host:
+            clauses.append(f"{{Doména}} = {at.esc(host)}")
         if not clauses:
             return None
         records = self.client.list_records(at.LEADS, f"OR({', '.join(clauses)})", max_records=1)
         return _lead_from_record(records[0]) if records else None
 
     def is_suppressed(self, email: str) -> bool:
+        """True if the address, or its company domain, belongs to a do_not_contact lead."""
         email = email.strip().lower()
+        clauses = [f"LOWER({{E-mail}}) = {at.esc(email)}"]
+        host = company_domain(None, email)
+        if host:
+            clauses.append(f"{{Doména}} = {at.esc(host)}")
         formula = (
-            f"AND({{Stav}} = {at.esc(at.LEAD_STATUS_LABELS['do_not_contact'])}, "
-            f"OR(LOWER({{E-mail}}) = {at.esc(email)}, {{Doména}} = {at.esc(domain(email))}))"
+            f"AND({{Stav}} = {at.esc(at.LEAD_STATUS_LABELS['do_not_contact'])}, OR({', '.join(clauses)}))"
         )
         return bool(self.client.list_records(at.LEADS, formula, fields=["Firma"], max_records=1))
 
@@ -294,9 +223,7 @@ class AirtableLeads:
         if status:
             clauses.append(f"{{Stav}} = {at.esc(at.LEAD_STATUS_LABELS[status])}")
         if query:
-            haystack = " & ' ' & ".join(
-                f"{{{LEAD_FIELDS[k]}}}" for k in ("company", "city", "industry", "email", "website", "notes")
-            )
+            haystack = " & ' ' & ".join(f"{{{LEAD_FIELDS[k]}}}" for k in SEARCH_FIELDS)
             clauses.append(f"SEARCH({at.esc(query.lower())}, LOWER({haystack}))")
         formula = f"AND({', '.join(clauses)})" if clauses else None
         records = self.client.list_records(at.LEADS, formula, sort=[("Vytvořeno", "asc")])
@@ -305,13 +232,13 @@ class AirtableLeads:
     def status_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
         for record in self.client.list_records(at.LEADS, fields=["Stav"]):
-            code = LEAD_STATUS_CODES.get(record.get("fields", {}).get("Stav"), "new")
-            counts[code] = counts.get(code, 0) + 1
+            status = _lead_from_record(record)["status"]
+            counts[status] = counts.get(status, 0) + 1
         return counts
 
     def add_email(self, lead_id: str, to: str, subject: str, body: str, sent_at: str) -> None:
         self.client.create_record(at.EMAILS, {
-            "Předmět": subject, "Lead": [lead_id], "Lead ID": lead_id,
+            "Předmět": subject, "Lead": [at.check_record_id(lead_id)], "Lead ID": lead_id,
             "Komu": to, "Text": body, "Odesláno": sent_at,
         })
 
@@ -331,34 +258,7 @@ class AirtableLeads:
         return len(self.client.list_records(at.EMAILS, formula, fields=["Předmět"]))
 
 
-class AirtableProfile:
-    def __init__(self, client: at.AirtableClient):
-        self.client = client
-
-    def load(self) -> str | None:
-        """The company profile is the first non-empty row of the Profil firmy table."""
-        for record in self.client.list_records(at.PROFILE, max_records=10):
-            text = format_profile(record.get("fields", {}))
-            if text:
-                return text
-        return None
-
-
-class AirtableServices:
-    def __init__(self, client: at.AirtableClient):
-        self.client = client
-
-    def list_active(self) -> list[dict[str, Any]]:
-        records = self.client.list_records(
-            at.SERVICES, f"{{Stav}} = {at.esc(at.SERVICE_ACTIVE)}", sort=[("Název", "asc")]
-        )
-        services = []
-        for record in records:
-            f = record.get("fields", {})
-            if not f.get("Název"):
-                continue
-            services.append({"id": record["id"], **{k: f.get(name) for k, name in SERVICE_FIELDS.items()}})
-        return services
+# --- tasks, audit, profile, services --------------------------------------------------------
 
 
 class AirtableTasks:
@@ -396,9 +296,19 @@ class AirtableTasks:
         try:
             return self._from_record(self.client.update_record(at.TASKS, task_id, fields))
         except at.AirtableError as exc:
-            if "404" in str(exc):
-                raise ToolError(f"Úkol {task_id} neexistuje.") from exc
-            raise
+            raise _not_found(exc, f"Úkol {task_id}") from exc
+
+
+SECRET_KEYS = re.compile(r"authorization|cookie|token|secret|password|passwd|api[-_]?key", re.I)
+
+
+def redact(value: Any) -> Any:
+    """Mask values of secret-looking keys (e.g. webhook Authorization headers)."""
+    if isinstance(value, dict):
+        return {k: "***" if SECRET_KEYS.search(str(k)) else redact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    return value
 
 
 class AirtableAudit:
@@ -409,10 +319,40 @@ class AirtableAudit:
         self.client.create_record(at.AUDIT, {
             "Nástroj": tool,
             "Čas": now_iso(),
-            "Vstup": json.dumps(tool_input, ensure_ascii=False, indent=2)[:90_000],
+            "Vstup": json.dumps(redact(tool_input), ensure_ascii=False, indent=2)[:90_000],
             "Schváleno": {True: "ano", False: "ne", None: "nevyžadováno"}[approved],
             "Výsledek": "chyba" if is_error else "ok",
         })
+
+
+class AirtableProfile:
+    def __init__(self, client: at.AirtableClient):
+        self.client = client
+
+    def load(self) -> str | None:
+        """The company profile is the first non-empty row of the Profil firmy table."""
+        for record in self.client.list_records(at.PROFILE, max_records=10):
+            text = format_profile(record.get("fields", {}))
+            if text:
+                return text
+        return None
+
+
+class AirtableServices:
+    def __init__(self, client: at.AirtableClient):
+        self.client = client
+
+    def list_active(self) -> list[dict[str, Any]]:
+        records = self.client.list_records(
+            at.SERVICES, f"{{Stav}} = {at.esc(at.SERVICE_ACTIVE)}", sort=[("Název", "asc")]
+        )
+        services = []
+        for record in records:
+            f = record.get("fields", {})
+            if not f.get("Název"):
+                continue
+            services.append({"id": record["id"], **{k: f.get(name) for k, name in SERVICE_FIELDS.items()}})
+        return services
 
 
 @dataclass
@@ -427,7 +367,3 @@ class Repos:
 def airtable_repos(client: at.AirtableClient, tz: str) -> Repos:
     return Repos(AirtableLeads(client, tz), AirtableTasks(client), AirtableAudit(client),
                  AirtableServices(client), AirtableProfile(client))
-
-
-def memory_repos(tz: str = "Europe/Prague") -> Repos:
-    return Repos(MemoryLeads(tz), MemoryTasks(), MemoryAudit(), MemoryServices(), MemoryProfile())

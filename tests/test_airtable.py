@@ -93,17 +93,24 @@ def test_lead_field_mapping():
     fields = _lead_to_fields({"company": "Alfa", "status": "do_not_contact", "website": "https://www.alfa.cz/x",
                               "draft": {"subject": "S", "body": "B", "updated_at": "2026-10-12T10:00:00+00:00"}})
     assert fields["Firma"] == "Alfa" and fields["Stav"] == "Nekontaktovat"
-    assert fields["Doména"] == "alfa.cz" and fields["Text návrhu"] == "B"
+    assert fields["Text návrhu"] == "B" and fields["Schválení návrhu"] == "Čeká na schválení"
     lead = _lead_from_record({"id": "rec1", "fields": {**fields, "Stav": "Má zájem"}})
     assert lead["status"] == "interested" and lead["draft"]["subject"] == "S"
+    assert lead["draft"]["approved"] is False
+    approved = _lead_from_record({"id": "rec1", "fields": {**fields, "Schválení návrhu": "Schváleno"}})
+    assert approved["draft"]["approved"] is True
     assert _lead_from_record({"id": "rec2", "fields": {}})["status"] == "new"
+    # Unknown (renamed/custom) status labels fail closed.
+    assert _lead_from_record({"id": "rec3", "fields": {"Stav": "Volat později"}})["status"] == "do_not_contact"
+    assert _lead_to_fields({"ico": "123 45"})["IČO"] == "00012345"
 
 
 def test_find_duplicate_formula(http, client):
     fake = http((200, {"records": []}))
-    assert AirtableLeads(client, "Europe/Prague").find_duplicate("123", "Info@Alfa.cz", "https://www.alfa.cz") is None
+    leads = AirtableLeads(client, "Europe/Prague")
+    assert leads.find_duplicate("123", "Info@Alfa.cz", "https://www.alfa.cz:443") is None
     formula = fake.requests[0]["query"]["filterByFormula"][0]
-    assert formula == 'OR({IČO} = "123", LOWER({E-mail}) = "info@alfa.cz", {Doména} = "alfa.cz")'
+    assert formula == 'OR({IČO} = "00000123", LOWER({E-mail}) = "info@alfa.cz", {Doména} = "alfa.cz")'
 
 
 def test_suppression_and_daily_count_formulas(http, client):
@@ -120,16 +127,52 @@ def test_suppression_and_daily_count_formulas(http, client):
 
 def test_add_email_links_lead(http, client):
     fake = http((200, {"records": [{"id": "e1", "fields": {}}]}))
-    AirtableLeads(client, "Europe/Prague").add_email("rec1", "a@b.cz", "S", "B", "2026-10-12T10:00:00+00:00")
+    lead_id = "recAAAAAAAAAAAAAA"
+    AirtableLeads(client, "Europe/Prague").add_email(lead_id, "a@b.cz", "S", "B", "2026-10-12T10:00:00+00:00")
     fields = fake.requests[0]["body"]["records"][0]["fields"]
     assert fake.requests[0]["path"] == "/v0/appTEST/E-maily"
-    assert fields["Lead"] == ["rec1"] and fields["Lead ID"] == "rec1"
+    assert fields["Lead"] == [lead_id] and fields["Lead ID"] == lead_id
 
 
-def test_get_rejects_non_airtable_id(client):
-    from aiagent.tools import ToolError
-    with pytest.raises(ToolError, match="rec"):
-        AirtableLeads(client, "Europe/Prague").get("5")
+def test_record_ids_are_validated_before_use_in_urls(client):
+    for bad in ("5", "rec1", "recAAAAAAAAAAAAAA/../../appX/Audit/recBBBBBBBBBBBBBB", "recAAAAAAAAAAAA%2F"):
+        with pytest.raises(at.AirtableError, match="Neplatné ID"):
+            AirtableLeads(client, "Europe/Prague").get(bad)
+        with pytest.raises(at.AirtableError, match="Neplatné ID"):
+            AirtableTasks(client).update(bad, {"status": "done"})
+
+
+def test_transport_errors_are_wrapped_and_reads_retried(client):
+    calls = []
+
+    def flaky(request, timeout=None):
+        calls.append(request.get_method())
+        raise TimeoutError("read timed out")
+
+    with mock.patch("aiagent.airtable.urllib.request.urlopen", flaky), mock.patch("aiagent.airtable.time.sleep"):
+        with pytest.raises(at.AirtableError, match="nedostupný"):
+            client.list_records("Leady")
+        assert len(calls) == client.MAX_RETRIES + 1
+        calls.clear()
+        with pytest.raises(at.AirtableError):
+            client.create_record("Leady", {"Firma": "X"})
+        assert calls == ["POST"]  # never repeated: it might have been stored already
+
+
+def test_rate_limit_waits_30_seconds_also_for_writes(http, client):
+    fake = http((429, {}), (200, {"records": [{"id": "recAAAAAAAAAAAAAA", "fields": {}}]}))
+    with mock.patch("aiagent.airtable.time.sleep") as sleep:
+        client.create_record("Leady", {"Firma": "X"})
+    assert len(fake.requests) == 2
+    assert mock.call(30) in sleep.call_args_list
+
+
+def test_audit_redacts_secrets(http, client):
+    fake = http((200, {"records": [{"id": "a1", "fields": {}}]}))
+    AirtableAudit(client).log("http_request", {"url": "https://hook", "headers": {"Authorization": "Bearer x",
+                                                                                  "X-Api-Key": "k"}}, True, False)
+    stored = fake.requests[0]["body"]["records"][0]["fields"]["Vstup"]
+    assert "Bearer x" not in stored and '"k"' not in stored and "https://hook" in stored
 
 
 def test_tasks_and_audit(http, client):
@@ -192,11 +235,12 @@ def test_setup_adds_service_link_to_existing_leads(http, client):
 def test_active_services(http, client):
     from aiagent.repos import AirtableServices
     fake = http((200, {"records": [
-        {"id": "recS1", "fields": {"Název": "Audit skladu", "Popis": "Projdeme sklad", "Cena": "od 15 000 Kč"}},
+        {"id": "recSERVICE0000001",
+         "fields": {"Název": "Audit skladu", "Popis": "Projdeme sklad", "Cena": "od 15 000 Kč"}},
         {"id": "recS2", "fields": {"Popis": "bez názvu se ignoruje"}},
     ]}))
     services = AirtableServices(client).list_active()
-    assert services == [{"id": "recS1", "name": "Audit skladu", "description": "Projdeme sklad",
+    assert services == [{"id": "recSERVICE0000001", "name": "Audit skladu", "description": "Projdeme sklad",
                          "target": None, "benefits": None, "price": "od 15 000 Kč",
                          "references": None, "url": None, "instructions": None}]
     assert fake.requests[0]["path"] == "/v0/appTEST/Služby"
@@ -204,8 +248,9 @@ def test_active_services(http, client):
 
 
 def test_lead_service_link_mapping():
-    assert _lead_to_fields({"service_id": "recS1"}) == {"Služba": ["recS1"]}
-    assert _lead_from_record({"id": "rec1", "fields": {"Služba": ["recS1"]}})["service_id"] == "recS1"
+    assert _lead_to_fields({"service_id": "recSERVICE0000001"}) == {"Služba": ["recSERVICE0000001"]}
+    lead = _lead_from_record({"id": "rec1", "fields": {"Služba": ["recSERVICE0000001"]}})
+    assert lead["service_id"] == "recSERVICE0000001"
 
 
 # --- CLI ---------------------------------------------------------------------------------
@@ -233,7 +278,7 @@ class StatefulAirtable:
         method = request.get_method()
         if method == "POST":
             self.n += 1
-            record = {"id": f"rec{self.n}", "fields": {k: v for k, v in body["records"][0]["fields"].items()
+            record = {"id": f"rec{self.n:014d}", "fields": {k: v for k, v in body["records"][0]["fields"].items()
                                                          if v is not None}}
             table[record["id"]] = record
             payload = {"records": [record]}
@@ -266,17 +311,18 @@ def test_tools_round_trip_through_airtable(config):
         registry = build_registry(config, airtable_repos(client, "Europe/Prague"))
         out = call(registry, "save_lead", company="Alfa s.r.o.", website="https://www.alfa.cz",
                    email="info@alfa.cz", email_source="https://alfa.cz/kontakt", status="qualified")
-        assert "Uloženo: rec1 [qualified] Alfa s.r.o." in out
-        call(registry, "save_draft", id="rec1", subject="Nabídka", body="Dobrý den", service_id="recS1")
-        fields = server.tables["Leady"]["rec1"]["fields"]
-        assert fields["Služba"] == ["recS1"]
+        assert "Uloženo: rec00000000000001 [qualified] Alfa s.r.o." in out
+        call(registry, "save_draft", id="rec00000000000001", subject="Nabídka", body="Dobrý den",
+             service_id="recSERVICE0000001")
+        fields = server.tables["Leady"]["rec00000000000001"]["fields"]
+        assert fields["Služba"] == ["recSERVICE0000001"]
         assert fields["Stav"] == "Návrh připraven" and fields["Text návrhu"] == "Dobrý den"
         assert fields["Doména"] == "alfa.cz"
-        assert "Dobrý den" in call(registry, "get_lead", id="rec1")
-        call(registry, "update_lead", id="rec1", status="do_not_contact", notes="Odhlásil se")
-        assert server.tables["Leady"]["rec1"]["fields"]["Stav"] == "Nekontaktovat"
+        assert "Dobrý den" in call(registry, "get_lead", id="rec00000000000001")
+        call(registry, "update_lead", id="rec00000000000001", status="do_not_contact", notes="Odhlásil se")
+        assert server.tables["Leady"]["rec00000000000001"]["fields"]["Stav"] == "Nekontaktovat"
         call(registry, "add_task", title="Zavolat", due="2026-10-20")
-        assert server.tables["Úkoly"]["rec2"]["fields"]["Stav"] == "K vyřízení"
+        assert server.tables["Úkoly"]["rec00000000000002"]["fields"]["Stav"] == "K vyřízení"
 
 
 def test_profile_reads_first_filled_row(http, client):
@@ -294,3 +340,27 @@ def test_profile_missing(http, client):
     from aiagent.repos import AirtableProfile
     http((200, {"records": []}))
     assert AirtableProfile(client).load() is None
+
+
+def test_search_and_counts(http, client):
+    fake = http(
+        (200, {"records": [{"id": "rec1", "fields": {"Firma": "Alfa", "Stav": "Kvalifikovaný"}}]}),
+        (200, {"records": [{"id": "rec1", "fields": {"Stav": "Kvalifikovaný"}},
+                           {"id": "rec2", "fields": {"Stav": "Nekontaktovat"}}, {"id": "rec3", "fields": {}}]}),
+    )
+    leads = AirtableLeads(client, "Europe/Prague")
+    assert [lead["company"] for lead in leads.search(status="qualified", query="Brno")] == ["Alfa"]
+    formula = fake.requests[0]["query"]["filterByFormula"][0]
+    assert formula.startswith('AND({Stav} = "Kvalifikovaný", SEARCH("brno", LOWER({Firma} & \' \' & {Město}')
+    assert leads.status_counts() == {"qualified": 1, "do_not_contact": 1, "new": 1}
+
+
+def test_tasks_list_and_missing_task(http, client):
+    fake = http((200, {"records": [{"id": "t1", "fields": {"Název": "A", "Stav": "Probíhá"}}]}),
+                (404, {"error": "NOT_FOUND"}))
+    tasks = AirtableTasks(client)
+    assert tasks.list()[0]["status"] == "in_progress"
+    assert fake.requests[0]["query"]["filterByFormula"] == ['AND({Stav} != "Hotovo", {Stav} != "Zrušeno")']
+    from aiagent.tools import ToolError
+    with pytest.raises(ToolError, match="neexistuje"):
+        tasks.update("recAAAAAAAAAAAAAA", {"status": "done"})

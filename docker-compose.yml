@@ -3,6 +3,8 @@ services:
     build: .
     image: aiagent:latest
     env_file: .env
+    # Forwards signals (docker stop, Ctrl+C) to the agent instead of Python running as PID 1.
+    init: true
     stdin_open: true
     tty: true
     # No volumes: profile, services and all data live in Airtable; configuration comes from .env.

@@ -38,7 +38,8 @@ def format_lead(lead: dict[str, Any], full: bool = False, emails: list[dict[str,
         if lead.get(key):
             rows.append(f"  {key}: {lead[key]}")
     if lead.get("draft"):
-        rows.append(f"  návrh e-mailu: {lead['draft']['subject']}\n{lead['draft']['body']}")
+        state = "schválen uživatelem" if lead["draft"].get("approved") else "čeká na schválení"
+        rows.append(f"  návrh e-mailu ({state}): {lead['draft']['subject']}\n{lead['draft']['body']}")
     for sent in emails or []:
         rows.append(f"  odesláno {sent['sent_at']} na {sent['to']}: {sent['subject']}")
     return "\n".join(rows)
@@ -101,6 +102,10 @@ def build(config: Config, repo: Any) -> list[Tool]:
             raise ToolError(f"Nelze měnit: {', '.join(sorted(unknown))}.")
         if "status" in changes and changes["status"] not in STATUSES:
             raise ToolError(f"Neplatný stav '{changes['status']}'.")
+        if changes.get("status", "do_not_contact") != "do_not_contact" and \
+                repo.get(id)["status"] == "do_not_contact":
+            # An opt-out is final for the agent; only a person can lift it, in Airtable.
+            raise ToolError("Kontakt je označen jako do_not_contact; změnit to může jen uživatel v Airtable.")
         _check_service(changes.get("service_id"))
         if changes.get("email") and not (changes.get("email_source") or repo.get(id).get("email_source")):
             raise ToolError("U e-mailu uveď email_source (URL stránky, kde je zveřejněný).")
@@ -121,20 +126,20 @@ def build(config: Config, repo: Any) -> list[Tool]:
 
     lead_fields = {
         "company": {"type": "string", "description": "Obchodní jméno firmy."},
-        "ico": {"type": "string"},
-        "website": {"type": "string"},
+        "ico": {"type": "string", "description": "IČO firmy."},
+        "website": {"type": "string", "description": "URL webu firmy."},
         "email": {"type": "string", "description": "Jen veřejně zveřejněný pracovní e-mail."},
         "email_source": {"type": "string", "description": "URL, kde je e-mail zveřejněný."},
-        "contact_name": {"type": "string"},
-        "contact_role": {"type": "string"},
-        "city": {"type": "string"},
-        "industry": {"type": "string"},
+        "contact_name": {"type": "string", "description": "Jméno kontaktní osoby, pokud je veřejně uvedené."},
+        "contact_role": {"type": "string", "description": "Funkce kontaktní osoby."},
+        "city": {"type": "string", "description": "Město sídla nebo provozovny."},
+        "industry": {"type": "string", "description": "Obor podnikání."},
         "fit_reason": {
             "type": "string",
             "description": "Proč firma odpovídá cílovému zákazníkovi a čeho se nabídka může chytit.",
         },
-        "notes": {"type": "string"},
-        "status": {"type": "string", "enum": list(STATUSES)},
+        "notes": {"type": "string", "description": "Další poznámky."},
+        "status": {"type": "string", "enum": list(STATUSES), "description": "Stav leadu."},
         "service_id": {
             "type": "string",
             "description": "ID nabízené služby z tabulky Služby (rec…), pokud už je jasné, co firmě nabídnout.",
@@ -176,7 +181,7 @@ def build(config: Config, repo: Any) -> list[Tool]:
             name="update_lead",
             description=(
                 "Upraví údaje nebo stav leadu. Když kontakt odpoví, že nemá zájem nebo nechce "
-                "další zprávy, nastav status do_not_contact."
+                "další zprávy, nastav status do_not_contact (zpět ho může vrátit jen uživatel)."
             ),
             input_schema=schema({**id_field, **lead_fields}, ["id"]),
             handler=update_lead,
@@ -190,7 +195,7 @@ def build(config: Config, repo: Any) -> list[Tool]:
             input_schema=schema(
                 {
                     **id_field,
-                    "subject": {"type": "string"},
+                    "subject": {"type": "string", "description": "Předmět e-mailu."},
                     "body": {"type": "string", "description": "Celý text e-mailu včetně podpisu."},
                     "service_id": {"type": "string", "description": "ID služby, kterou e-mail nabízí (rec…)."},
                 },

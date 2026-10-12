@@ -5,7 +5,6 @@ import pytest
 from aiagent.agent import build_system_prompt
 from aiagent.cli import main
 from aiagent.config import Config, SmtpConfig
-from aiagent.repos import memory_repos
 from aiagent.tools import ToolError, build_registry
 from aiagent.tools.mail import open_smtp, smtp_check
 
@@ -55,26 +54,50 @@ def test_off_mode_has_no_send_tool(config, repos):
     assert "send_email" not in build_registry(smtp_config(config, "off"), repos)
 
 
-def test_auto_mode_sends_only_saved_draft_without_approval(config, repos):
+def test_auto_mode_sends_only_drafts_approved_in_airtable(config, repos):
     registry = build_registry(smtp_config(config, "auto"), repos)
     tool = registry.get("send_email")
     assert not tool.requires_approval({})
+    lead_id = "rec00000000000001"
     registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz",
                                       email_source="https://alfa.cz/kontakt")
-    with pytest.raises(ToolError, match="návrhem"):
-        tool.handler(lead_id="rec00001", to="info@alfa.cz", subject="Nabídka", body="Text")
-    registry.get("save_draft").handler(id="rec00001", subject="Nabídka", body="Text\n")
-    with pytest.raises(ToolError, match="návrhem"):
-        tool.handler(lead_id="rec00001", to="info@alfa.cz", subject="Nabídka", body="Jiný text")
+    send = dict(lead_id=lead_id, to="info@alfa.cz", subject="Nabídka", body="Text")
+    with pytest.raises(ToolError, match="schválil"):
+        tool.handler(**send)
+    # The model saving a draft is not enough: a person has to approve it in Airtable.
+    registry.get("save_draft").handler(id=lead_id, subject="Nabídka", body="Text\n")
+    with pytest.raises(ToolError, match="schválil"):
+        tool.handler(**send)
+    repos.leads.approve_draft(lead_id)
+    with pytest.raises(ToolError, match="liší"):
+        tool.handler(**{**send, "body": "Jiný text"})
+    with pytest.raises(ToolError, match="follow_up"):
+        tool.handler(**send, follow_up=True)
     with mock.patch("aiagent.tools.mail.smtplib.SMTP") as smtp_cls:
-        tool.handler(lead_id="rec00001", to="info@alfa.cz", subject="Nabídka", body="Text")
+        tool.handler(**send)
     smtp_cls.return_value.__enter__.return_value.send_message.assert_called_once()
-    assert repos.leads.get("rec00001")["status"] == "contacted"
+    lead = repos.leads.get(lead_id)
+    assert lead["status"] == "contacted" and lead["draft"] is None
+
+
+def test_new_draft_resets_approval(config, repos):
+    registry = build_registry(smtp_config(config, "auto"), repos)
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    registry.get("save_draft").handler(id="rec00000000000001", subject="S", body="B")
+    repos.leads.approve_draft("rec00000000000001")
+    registry.get("save_draft").handler(id="rec00000000000001", subject="S", body="B2")
+    assert repos.leads.get("rec00000000000001")["draft"]["approved"] is False
+
+
+def test_yes_flag_does_not_approve_emails(capsys):
+    from aiagent.cli import auto_approver
+    assert auto_approver("send_email", {}) is False
+    assert auto_approver("http_request", {"url": "https://x"}) is True
 
 
 def test_system_prompt_per_mode(config):
     smtp_config(config, "auto")
-    assert "automaticky bez schvalování" in build_system_prompt(config, sending_enabled=True)
+    assert "schválil v Airtable" in build_system_prompt(config, sending_enabled=True)
     config.send_mode = "approve"
     assert "uživatel schvaluje" in build_system_prompt(config, sending_enabled=True)
 

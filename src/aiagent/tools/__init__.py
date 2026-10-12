@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from ..config import Config
 
@@ -20,8 +21,10 @@ class Tool:
     description: str
     input_schema: dict[str, Any]
     handler: Callable[..., str]
-    # True, False, or a predicate over the tool input (e.g. only non-GET requests).
+    # True, False, or a predicate over the tool input.
     needs_approval: bool | Callable[[dict[str, Any]], bool] = False
+    # Strict mode guarantees schema-valid arguments; needs a schema without free-form objects.
+    strict: bool = True
 
     def requires_approval(self, tool_input: dict[str, Any]) -> bool:
         if callable(self.needs_approval):
@@ -29,11 +32,14 @@ class Tool:
         return self.needs_approval
 
     def to_api(self) -> dict[str, Any]:
-        return {
+        definition: dict[str, Any] = {
             "name": self.name,
             "description": self.description,
             "input_schema": self.input_schema,
         }
+        if self.strict:
+            definition["strict"] = True
+        return definition
 
 
 def schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -52,10 +58,9 @@ def truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
 
 
 class ToolRegistry:
-    def __init__(self, tools: list[Tool], server_tools: list[dict[str, Any]] | None = None, repos=None):
+    def __init__(self, tools: list[Tool], server_tools: list[dict[str, Any]] | None = None):
         self._tools = {tool.name: tool for tool in tools}
         self.server_tools = server_tools or []
-        self.repos = repos
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools
@@ -73,7 +78,7 @@ class ToolRegistry:
         return client_tools + self.server_tools
 
 
-def build_registry(config: Config, repos) -> ToolRegistry:
+def build_registry(config: Config, repos: Any) -> ToolRegistry:
     """All agent data goes through `repos` (Airtable in production)."""
     from . import ares, leads, mail, system, tasks, web
 
@@ -87,4 +92,4 @@ def build_registry(config: Config, repos) -> ToolRegistry:
         tools += mail.build(config, repos.leads)
 
     server_tools = web.server_tools() if config.web_tools else []
-    return ToolRegistry(tools, server_tools, repos=repos)
+    return ToolRegistry(tools, server_tools)

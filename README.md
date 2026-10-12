@@ -1,6 +1,6 @@
 # AIAGENT001: AI obchodník
 
-Agent pro příkazovou řádku postavený na [Claude API](https://platform.claude.com/docs). Vyhledává potenciální zákazníky, ověří, že jim vaše nabídka dává smysl, najde jejich veřejný kontakt a napíše jim osobní e-mail s nabídkou spolupráce. Každý e-mail vám před odesláním ukáže ke schválení.
+Agent pro příkazovou řádku postavený na [Claude API](https://platform.claude.com/docs). Vyhledává potenciální zákazníky, ověří, že jim vaše nabídka dává smysl, najde jejich veřejný kontakt a napíše jim osobní e-mail s nabídkou spolupráce. Žádný e-mail neodejde bez vašeho schválení: buď ho potvrdíte v terminálu, nebo předem schválíte návrh v Airtable.
 
 Všechna data (leady, návrhy e-mailů, odeslané e-maily, úkoly a audit log) ukládá do vaší báze v **[Airtable](https://airtable.com)**. Tam také popíšete svou firmu a služby, které nabízíte. Na serveru tak zůstává jen soubor `.env` s klíči. Lokálně neukládá nic, takže leady můžete procházet, filtrovat a upravovat přímo v Airtable a agent při další práci vychází z aktuálního stavu.
 
@@ -25,7 +25,7 @@ Mám návrhy odeslat?
 3. **Kontakt:** použije jen e-mail, který firma sama zveřejňuje, a zapíše, kde ho našel. Adresy nehádá.
 4. **Databáze leadů v Airtable:** každou vhodnou firmu uloží i s odůvodněním. Hlídá duplicity (IČO, e-mail, doména), takže nikoho neosloví dvakrát.
 5. **E-mail na míru:** krátký, věcný, s odkazem na konkrétní zjištění o firmě, jednou výzvou k akci, vaším podpisem a možností odhlášení. Návrh uloží k leadu v Airtable, kde ho můžete zkontrolovat i upravit.
-6. **Odeslání:** jen na váš pokyn a každý e-mail po schválení. Platí denní limit a kontakty, které si zprávy nepřejí, agent zablokuje.
+6. **Odeslání:** jen na váš pokyn, jen na adresu uloženou u leadu a jen po schválení (v terminálu, nebo v Airtable). Platí denní limit a kontakty, které si zprávy nepřejí, agent zablokuje.
 
 ## Nástroje
 
@@ -35,10 +35,10 @@ Mám návrhy odeslat?
 | `web_search`, `web_fetch` | vyhledávání a čtení webu (běží na serverech Anthropicu) | ne |
 | `save_lead`, `list_leads`, `get_lead`, `update_lead` | databáze leadů (Airtable, tabulka Leady) | ne |
 | `save_draft` | uložení návrhu e-mailu k leadu (Airtable) | ne |
-| `send_email` | odeslání e-mailu přes SMTP a zápis do tabulky E-maily (jen když je odesílání zapnuté) | **ano**, v režimu `auto` ne |
+| `send_email` | odeslání e-mailu přes SMTP na adresu leadu a zápis do tabulky E-maily (jen když je odesílání zapnuté) | **ano**; v režimu `auto` jen návrhy schválené v Airtable |
 | `add_task`, `list_tasks`, `update_task` | připomínky follow-upů (Airtable, tabulka Úkoly) | ne |
 | `get_current_time` | dnešní datum | ne |
-| `http_request` | webhooky a REST API (např. Make) | **ano**, kromě GET |
+| `http_request` | webhooky a REST API (např. Make); vnitřní a neveřejné adresy jsou zakázané | **ano**, vždy |
 
 ## Airtable
 
@@ -48,12 +48,14 @@ Agent používá ve vaší bázi šest tabulek. Vytvoří je sám příkazem `ai
 |---|---|
 | **Profil firmy** | kdo jste, ideální zákazník, tón e-mailů, podpis; **vyplňujete vy** (jeden řádek), agent jen čte |
 | **Služby** | co nabízíte; **vyplňujete vy**, agent jen čte |
-| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, nabízená služba, návrh e-mailu (předmět, text), kdy byl naposledy osloven |
+| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, nabízená služba, návrh e-mailu (předmět, text, **schválení návrhu**), kdy byl naposledy osloven |
 | **E-maily** | každý odeslaný e-mail: předmět, text, komu, kdy, propojený s leadem |
 | **Úkoly** | připomínky a follow-upy s termínem |
 | **Audit** | záznam každé akce agenta: nástroj, vstup, čas, schválení a výsledek |
 
-Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví.
+Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví a sám tento stav zrušit nemůže, to jde jen ručně v Airtable. Stav, který agent nezná (třeba vlastní nebo přejmenovaný), bere z opatrnosti jako „Nekontaktovat“.
+
+**Schválení návrhu:** když agent uloží nebo změní návrh e-mailu, nastaví pole *Schválení návrhu* na „Čeká na schválení“. Návrh si v Airtable přečtěte, případně upravte, a přepněte na „Schváleno“. Toto pole agent nikdy nenastavuje sám. V režimu `auto` odešle jen takto schválené návrhy, beze změny textu.
 
 ### Tabulka Profil firmy
 
@@ -134,7 +136,7 @@ docker compose run --rm agent smtp-test --to vas@email.cz
 
 V chatu (`docker compose run --rm agent`) se vás agent před každým e-mailem zeptá na schválení stejně jako bez Dockeru.
 
-**Pravidelné spouštění přes cron hostitele** (`-T` vypne terminál; v režimu `approve` proto agent jen připraví návrhy, v režimu `auto` je i odešle):
+**Pravidelné spouštění přes cron hostitele** (`-T` vypne terminál; v režimu `approve` proto agent jen připraví návrhy, v režimu `auto` odešle ty, které jste schválili v Airtable):
 
 ```cron
 50 7 * * 1-5  cd /cesta/k/AIAGENT001 && docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> /var/log/aiagent.log 2>&1
@@ -184,9 +186,9 @@ Režim odesílání určuje `AIAGENT_SEND_MODE` v `.env` nebo přepínač `--sen
 |---|---|---|
 | `off` | nic neodesílá, jen ukládá návrhy do Airtable | když chcete posílat ručně |
 | `approve` | před každým e-mailem ukáže celý text a čeká na „a“ | chat (výchozí, když je SMTP nastavené) |
-| `auto` | odesílá bez ptaní, ale jen text shodný s uloženým návrhem | běh bez terminálu: cron, `docker compose run -T` |
+| `auto` | odesílá bez ptaní, ale jen návrhy, které jste v Airtable schválili (*Schválení návrhu* = Schváleno), beze změny textu; nikdy neposílá follow-upy | běh bez terminálu: cron, `docker compose run -T` |
 
-Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. Režim `auto` zapínejte až ve chvíli, kdy jste s kvalitou návrhů spokojení.
+Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. E-mail jde vždy jen na adresu uloženou u leadu, a to jedné osobě (žádné kopie ani seznamy adres). Typický postup s režimem `auto`: cron ráno najde firmy a připraví návrhy, vy je během dne schválíte v Airtable a další běh je odešle.
 
 ## Použití
 
@@ -212,7 +214,9 @@ V chatu fungují příkazy `/leads`, `/profil`, `/sluzby`, `/tasks`, `/tools`, `
 aiagent run "Najdi 5 nových firem podle profilu a připrav jim návrhy e-mailů."
 ```
 
-Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` proto e-maily neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Pro odesílání bez dozoru použijte `--send-mode auto` (nebo `AIAGENT_SEND_MODE=auto`). Přepínač `--yes` schvaluje úplně všechny akce. U e-mailů je bezpečnější režim `auto`, který odešle jen uložený návrh.
+Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` proto e-maily neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Pro odesílání bez dozoru použijte `--send-mode auto` (nebo `AIAGENT_SEND_MODE=auto`), který pošle jen návrhy schválené v Airtable. Přepínač `--yes` schvaluje ostatní akce (např. webhooky), e-maily ale nikdy.
+
+Návratový kód příkazu `run` je 0, když agent úkol dokončil, 1 při chybě nebo nedokončení (odmítnutí, limit délky nebo kroků) a 130 po Ctrl+C, takže ho cron i skripty umí vyhodnotit. Zadání můžete předat i souborem: `aiagent run -f zadani.md` (nebo `-f -` ze standardního vstupu).
 
 ```cron
 50 7 * * 1-5  cd /cesta/k/AIAGENT001 && .venv/bin/aiagent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> /var/log/aiagent.log 2>&1
@@ -228,12 +232,15 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIRTABLE_TOKEN` | – | osobní token Airtable (povinný) |
 | `AIRTABLE_BASE_ID` | – | ID báze Airtable, `app…` (povinné) |
 | `AIAGENT_MODEL` | `claude-opus-5-5` | model Claude |
-| `AIAGENT_EFFORT` | `high` | hloubka uvažování; `medium` je levnější a rychlejší |
+| `AIAGENT_EFFORT` | `medium` | hloubka uvažování (`low` až `max`); vyšší je pečlivější, ale dražší a pomalejší |
 | `AIAGENT_DAILY_EMAIL_LIMIT` | `20` | maximum odeslaných e-mailů za den |
 | `AIAGENT_TIMEZONE` | `Europe/Prague` | časové pásmo |
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | – | SMTP server pro odesílání |
+| `AIAGENT_LOG_LEVEL` | `WARNING` | logování na stderr; `INFO` vypíše u každého volání modelu spotřebu tokenů a request id |
+| `AIAGENT_ENV_FILE` | `.env` | jiný konfigurační soubor (načítá se jen z aktuální složky, ne z nadřazených) |
+| `NO_COLOR` | – | vypne barevný výstup |
 
 ## Právní minimum (ČR/EU)
 
@@ -258,17 +265,32 @@ src/aiagent/
     └── __init__.py   registr nástrojů
 ```
 
-Agent volá Messages API s adaptivním uvažováním. Opakující se část požadavku (prompt, profil, nástroje, historie) se ukládá do cache, takže další kroky stojí méně. Kdyby model požadavek odmítl, API ho zkusí zopakovat na záložním modelu (`fallbacks: "default"`). Každé volání nástroje se zapisuje do tabulky Audit v Airtable.
+Agent volá Messages API se streamováním (dlouhé kroky tak nenarazí na časový limit) a s adaptivním uvažováním. Mezi voláním nástrojů vypisuje krátké průběžné poznámky. Opakující se část požadavku (prompt, profil, nástroje, historie) se ukládá do cache, takže další kroky stojí méně. Kdyby model požadavek odmítl, API ho zkusí zopakovat na záložním modelu (`fallbacks: "default"`). Každé volání nástroje se zapisuje do tabulky Audit v Airtable.
 
 ### Přidání vlastního nástroje
 
-Vytvořte soubor v `src/aiagent/tools/` s funkcí `build(config) -> list[Tool]` a zaregistrujte ho v `build_registry()` v `tools/__init__.py`. Vzorem může být `ares.py`. Popis nástroje (`description`) je pro model nejdůležitější: napište, k čemu nástroj slouží a kdy ho použít.
+Vytvořte soubor v `src/aiagent/tools/` s funkcí `build(config) -> list[Tool]` (nástroje pracující s daty dostávají i repozitář, např. `build(config, repo)`) a zaregistrujte ho v `build_registry()` v `tools/__init__.py`. Vzorem může být `ares.py`. Nástroje mají ve výchozím stavu zapnutý `strict` režim, takže schéma parametrů musí mít `additionalProperties: false` (zajistí helper `schema()`). Popis nástroje (`description`) je pro model nejdůležitější: napište, k čemu nástroj slouží a kdy ho použít.
 
-## Testy
+## Vývoj
 
 ```bash
 pip install -e ".[dev]"
-pytest
+ruff check .        # linter
+mypy                # typová kontrola
+pytest --cov=aiagent
 ```
 
-Testy nepotřebují API klíč ani síť. Claude API, Airtable, ARES i SMTP jsou v nich simulované.
+Testy nepotřebují API klíč ani síť. Claude API, Airtable, ARES i SMTP jsou v nich simulované a testy neovlivní proměnné prostředí ani váš `.env`. Stejné kontroly a sestavení Docker image spouští GitHub Actions (`.github/workflows/ci.yml`) na Pythonu 3.10 a 3.13.
+
+Docker image instaluje přesné verze závislostí z `requirements.lock` (s kontrolními součty). Po změně závislostí v `pyproject.toml` lock vygenerujte znovu:
+
+```bash
+uv pip compile pyproject.toml --python-version 3.13 --python-platform linux --generate-hashes -o requirements.lock
+```
+
+## Bezpečnost
+
+- Agent čte cizí weby, které mohou obsahovat podstrčené pokyny (prompt injection). Proto každý HTTP požadavek schvalujete vy, požadavky na vnitřní a neveřejné adresy jsou zakázané (i přes přesměrování) a model má výslovný pokyn obsah webů brát jen jako data.
+- E-mail jde jen na adresu uloženou u leadu, jedné osobě. Bez terminálu jen schválené návrhy z Airtable.
+- Hodnoty, které vypadají jako tajné (hlavičky `Authorization`, tokeny, hesla), se v auditu i na obrazovce maskují. Řídicí znaky z textů modelu a webů se před výpisem odstraňují, aby nešlo podvrhnout, co schvalujete.
+- Klíče jsou jen v `.env`, který není v gitu ani v Docker image. Kontejner běží pod neprivilegovaným uživatelem a nic neukládá.

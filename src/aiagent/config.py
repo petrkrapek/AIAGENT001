@@ -4,13 +4,27 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # off: drafts only; approve: every e-mail needs confirmation; auto: send without asking
 SEND_MODES = ("off", "approve", "auto")
 SMTP_SECURITY = ("starttls", "ssl", "none")
+
+
+def _int(name: str, default: int, low: int, high: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} musí být celé číslo, ne '{raw}'.") from None
+    if not low <= value <= high:
+        raise ValueError(f"{name} musí být mezi {low} a {high}, ne {value}.")
+    return value
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -33,7 +47,8 @@ class SmtpConfig:
 @dataclass
 class Config:
     model: str = "claude-opus-5-5"
-    effort: str = "high"
+    # Claude Opus 5.5 at medium effort beats earlier models at high; raise it only if needed.
+    effort: str = "medium"
     timezone: str = "Europe/Prague"
     web_tools: bool = True
     smtp: SmtpConfig | None = None
@@ -50,6 +65,12 @@ class Config:
             raise ValueError(f"AIAGENT_SEND_MODE={self.send_mode} vyžaduje nastavené SMTP (SMTP_HOST a další).")
         if self.smtp is not None and not self.smtp.sender:
             raise ValueError("Chybí SMTP_FROM (adresa odesílatele).")
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(
+                f"AIAGENT_TIMEZONE '{self.timezone}' není platné časové pásmo (např. Europe/Prague)."
+            ) from None
 
     def validate_airtable(self) -> None:
         if not self.airtable_token or not self.airtable_base_id:
@@ -64,11 +85,11 @@ class Config:
         return self.send_mode != "off" and self.smtp is not None
 
     @classmethod
-    def from_env(cls) -> "Config":
-        # Look for .env from the current directory upwards.
-        load_dotenv(find_dotenv(usecwd=True))
+    def from_env(cls) -> Config:
+        # Only ./.env (or an explicit file), never one found in some parent directory.
+        load_dotenv(os.environ.get("AIAGENT_ENV_FILE") or ".env")
 
-        effort = (os.environ.get("AIAGENT_EFFORT") or "high").strip().lower()
+        effort = (os.environ.get("AIAGENT_EFFORT") or "medium").strip().lower()
         if effort not in EFFORT_LEVELS:
             raise ValueError(
                 f"AIAGENT_EFFORT musí být jedno z {', '.join(EFFORT_LEVELS)}, ne '{effort}'"
@@ -76,7 +97,7 @@ class Config:
 
         smtp = None
         if os.environ.get("SMTP_HOST"):
-            port = int(os.environ.get("SMTP_PORT") or 587)
+            port = _int("SMTP_PORT", 587, 1, 65535)
             security = (os.environ.get("SMTP_SECURITY") or ("ssl" if port == 465 else "starttls")).lower()
             if security not in SMTP_SECURITY:
                 raise ValueError(f"SMTP_SECURITY musí být jedno z {', '.join(SMTP_SECURITY)}, ne '{security}'")
@@ -94,11 +115,11 @@ class Config:
         return cls(
             model=os.environ.get("AIAGENT_MODEL") or "claude-opus-5-5",
             effort=effort,
-            timezone=os.environ.get("AIAGENT_TIMEZONE") or "Europe/Prague",
+            timezone=(os.environ.get("AIAGENT_TIMEZONE") or "Europe/Prague").strip(),
             web_tools=_flag("AIAGENT_WEB_TOOLS", True),
             smtp=smtp,
             airtable_token=(os.environ.get("AIRTABLE_TOKEN") or "").strip(),
             airtable_base_id=(os.environ.get("AIRTABLE_BASE_ID") or "").strip(),
             send_mode=send_mode,
-            daily_email_limit=int(os.environ.get("AIAGENT_DAILY_EMAIL_LIMIT") or 20),
+            daily_email_limit=_int("AIAGENT_DAILY_EMAIL_LIMIT", 20, 0, 10_000),
         )

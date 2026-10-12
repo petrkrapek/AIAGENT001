@@ -6,6 +6,12 @@ venv/
 build/
 dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
 
-# Lokální konfigurace
+# Lokální konfigurace (klíče)
 .env
+.env.*
+!.env.example

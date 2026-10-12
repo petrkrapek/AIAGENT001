@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -13,7 +15,20 @@ API_URL = "https://api.airtable.com/v0"
 
 
 class AirtableError(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+RECORD_ID = re.compile(r"^rec[A-Za-z0-9]{14}$")
+
+
+def check_record_id(record_id: str) -> str:
+    """Record ids end up in URL paths; accept only the real Airtable format."""
+    if not isinstance(record_id, str) or not RECORD_ID.match(record_id):
+        raise AirtableError(f"Neplatné ID záznamu '{record_id}' (Airtable ID má tvar recXXXXXXXXXXXXXX).",
+                            status=400)
+    return record_id
 
 
 def esc(value: str) -> str:
@@ -22,9 +37,10 @@ def esc(value: str) -> str:
 
 
 class AirtableClient:
-    # Airtable allows 5 requests per second per base.
+    # Airtable allows 5 requests per second per base and asks to wait 30 s after a 429.
     MIN_INTERVAL = 0.22
-    MAX_RETRIES = 4
+    MAX_RETRIES = 3
+    RATE_LIMIT_WAIT = 30
 
     def __init__(self, token: str, base_id: str, api_url: str = API_URL):
         self.token = token
@@ -42,27 +58,35 @@ class AirtableClient:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
+        # Only reads are safe to repeat after an ambiguous failure; a repeated POST/PATCH
+        # could create duplicates. A 429 means the request was not processed at all.
+        idempotent = method == "GET"
         for attempt in range(self.MAX_RETRIES + 1):
             wait = self.MIN_INTERVAL - (time.monotonic() - self._last_request)
             if wait > 0:
                 time.sleep(wait)
             self._last_request = time.monotonic()
             request = urllib.request.Request(url, data=data, method=method, headers=headers)
+            last = attempt == self.MAX_RETRIES
             try:
                 with urllib.request.urlopen(request, timeout=30) as resp:
                     raw = resp.read().decode("utf-8")
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as exc:
-                retryable = exc.code == 429 or exc.code >= 500
-                if retryable and attempt < self.MAX_RETRIES:
-                    time.sleep(min(30, 2 ** attempt))
+                if exc.code == 429 and not last:
+                    time.sleep(self.RATE_LIMIT_WAIT)
                     continue
-                raise AirtableError(self._describe(exc)) from exc
-            except urllib.error.URLError as exc:
-                if attempt < self.MAX_RETRIES:
+                if exc.code >= 500 and idempotent and not last:
                     time.sleep(2 ** attempt)
                     continue
-                raise AirtableError(f"Airtable je nedostupný: {exc.reason}") from exc
+                raise AirtableError(self._describe(exc), status=exc.code) from exc
+            except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
+                # URLError, timeouts, dropped connections, malformed responses.
+                if idempotent and not last:
+                    time.sleep(2 ** attempt)
+                    continue
+                reason = getattr(exc, "reason", exc)
+                raise AirtableError(f"Airtable je nedostupný nebo neodpověděl: {reason}") from exc
         raise AirtableError("Airtable neodpovídá.")  # pragma: no cover
 
     @staticmethod
@@ -111,8 +135,11 @@ class AirtableClient:
             if not offset:
                 return records
 
+    def _record_path(self, table: str, record_id: str) -> str:
+        return f"{self._table_path(table)}/{urllib.parse.quote(check_record_id(record_id), safe='')}"
+
     def get_record(self, table: str, record_id: str) -> dict[str, Any]:
-        return self.request("GET", f"{self._table_path(table)}/{urllib.parse.quote(record_id)}")
+        return self.request("GET", self._record_path(table, record_id))
 
     def create_record(self, table: str, fields: dict[str, Any]) -> dict[str, Any]:
         result = self.request("POST", self._table_path(table),
@@ -120,7 +147,7 @@ class AirtableClient:
         return result["records"][0]
 
     def update_record(self, table: str, record_id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        return self.request("PATCH", f"{self._table_path(table)}/{urllib.parse.quote(record_id)}",
+        return self.request("PATCH", self._record_path(table, record_id),
                             body={"fields": fields, "typecast": True})
 
     # --- schema (Meta API) --------------------------------------------------------
@@ -155,6 +182,8 @@ LEAD_STATUS_LABELS = {
     "not_interested": "Nemá zájem",
     "do_not_contact": "Nekontaktovat",
 }
+DRAFT_PENDING = "Čeká na schválení"
+DRAFT_APPROVED = "Schváleno"
 SERVICE_ACTIVE = "Aktivní"
 SERVICE_INACTIVE = "Neaktivní"
 TASK_STATUS_LABELS = {
@@ -235,6 +264,7 @@ def schema(timezone: str) -> dict[str, list[dict[str, Any]]]:
             _text("Předmět návrhu"),
             _long("Text návrhu"),
             _datetime("Návrh upraven", timezone),
+            _select("Schválení návrhu", [DRAFT_PENDING, DRAFT_APPROVED]),
             _datetime("Naposledy osloven", timezone),
             _datetime("Vytvořeno", timezone),
             _datetime("Aktualizováno", timezone),

@@ -72,9 +72,9 @@ def build(config: Config, repo: Any) -> list[Tool]:
                 {
                     "id": {"type": "string", "description": "ID úkolu v Airtable (rec…)."},
                     "status": {"type": "string", "enum": list(STATUSES)},
-                    "title": {"type": "string"},
+                    "title": {"type": "string", "description": "Nový název úkolu."},
                     "due": {"type": "string", "description": "YYYY-MM-DD"},
-                    "notes": {"type": "string"},
+                    "notes": {"type": "string", "description": "Nová poznámka."},
                 },
                 ["id"],
             ),

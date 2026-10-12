@@ -1,10 +1,13 @@
 """Agent loop tests against a scripted fake client (no network, no API key)."""
 
+from contextlib import contextmanager
 from types import SimpleNamespace as NS
 
+import pytest
+
 from aiagent.agent import Agent, AgentEvents
-from aiagent.repos import memory_repos
 from aiagent.tools import Tool, build_registry, schema
+from memory_repos import memory_repos
 
 
 def text(t):
@@ -16,19 +19,23 @@ def tool_use(id, name, input):
 
 
 def response(stop_reason, *content):
-    return NS(stop_reason=stop_reason, content=list(content), stop_details=None)
+    usage = NS(input_tokens=10, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    return NS(stop_reason=stop_reason, content=list(content), stop_details=None, usage=usage,
+              model="claude-opus-5-5")
 
 
 class FakeClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
-        self.beta = NS(messages=NS(create=self._create))
+        self.beta = NS(messages=NS(stream=self._stream))
 
-    def _create(self, **kwargs):
+    @contextmanager
+    def _stream(self, **kwargs):
         # Snapshot the messages: the agent keeps appending to the same list.
         self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        yield NS(get_final_message=lambda: response)
 
 
 class Recorder(AgentEvents):
@@ -67,8 +74,11 @@ def test_simple_answer(config):
     call = client.calls[0]
     assert call["model"] == "claude-opus-5-5"
     assert call["fallbacks"] == "default"
-    assert call["thinking"] == {"type": "adaptive"}
-    assert call["output_config"] == {"effort": "high"}
+    assert call["thinking"] == {"type": "adaptive", "display": "updates"}
+    assert call["betas"] == ["thinking-display-updates-2026-08-18", "server-side-fallback-2026-07-01"]
+    assert call["max_tokens"] == 64_000
+    assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert call["output_config"] == {"effort": config.effort}
     assert "tool_choice" not in call
 
 
@@ -132,7 +142,7 @@ def test_tool_errors_are_reported_to_model(config):
                 tool_use("t2", "nonexistent", {}),
                 tool_use("t3", "get_lead", {"wrong": 1}),
             ),
-            response("end_turn", text("Soubor neexistuje.")),
+            response("end_turn", text("Lead neexistuje.")),
         ],
     )
     agent.run("ukaž lead")
@@ -148,12 +158,65 @@ def test_pause_turn_resumes(config):
     assert client.calls[1]["messages"][-1]["role"] == "assistant"
 
 
-def test_refusal_keeps_history_append_only(config):
-    refused = response("refusal")
-    agent, _, events = make_agent(config, [refused])
+def test_refused_message_is_dropped(config):
+    agent, _, events = make_agent(config, [response("refusal")])
     agent.run("něco")
-    assert agent.messages == [{"role": "user", "content": "něco"}]
-    assert events.notices and "odmítl" in events.notices[0]
+    assert agent.messages == []
+    assert "odmítl" in events.notices[0] and "přeformulovat" in events.notices[0]
+
+
+def test_refusal_after_tools_keeps_history(config):
+    agent, _, events = make_agent(
+        config, [response("tool_use", tool_use("t1", "list_tasks", {})), response("refusal")]
+    )
+    agent.run("něco")
+    assert [m["role"] for m in agent.messages] == ["user", "assistant", "user"]
+    assert "/reset" in events.notices[-1]
+
+
+def test_max_tokens_answers_pending_tool_calls(config):
+    agent, _, events = make_agent(
+        config, [response("max_tokens", tool_use("t1", "publish", {"text": "x"}))],
+        approver=lambda n, i: True,
+    )
+    agent.run("publikuj")
+    assert agent.performed == []
+    last = agent.messages[-1]
+    assert last["role"] == "user" and last["content"][0]["tool_use_id"] == "t1"
+    assert last["content"][0]["is_error"] is True
+
+
+def test_ctrl_c_during_approval_keeps_history_valid(config):
+    def interrupt(name, tool_input):
+        raise KeyboardInterrupt
+
+    agent, _, _ = make_agent(
+        config,
+        [response("tool_use", tool_use("t1", "list_tasks", {}), tool_use("t2", "publish", {"text": "x"}))],
+        approver=interrupt,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        agent.run("publikuj")
+    results = agent.messages[-1]["content"]
+    assert [r["tool_use_id"] for r in results] == ["t1", "t2"]
+    assert results[0]["is_error"] is False and results[1]["is_error"] is True
+
+
+def test_iteration_limit_after_pause_turn_drops_paused_turn(config):
+    config.max_iterations = 1
+    paused = response("pause_turn", NS(type="server_tool_use", name="web_search", input={"query": "x"}))
+    agent, _, _ = make_agent(config, [paused])
+    agent.run("hledej")
+    assert agent.messages[-1]["role"] == "user"
+
+
+def test_model_specific_features(config):
+    config.model = "claude-haiku-5-5"
+    agent, client, _ = make_agent(config, [response("end_turn", text("Ahoj"))])
+    agent.run("Ahoj")
+    call = client.calls[0]
+    assert "fallbacks" not in call and "betas" not in call
+    assert call["thinking"] == {"type": "adaptive"}
 
 
 def test_iteration_limit(config):
