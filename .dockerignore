@@ -2,7 +2,6 @@
 .env
 .venv
 venv
-profil.md
 **/__pycache__
 **/*.egg-info
 .pytest_cache

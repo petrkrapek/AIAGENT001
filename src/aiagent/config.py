@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -41,7 +40,6 @@ class Config:
     airtable_token: str = ""
     airtable_base_id: str = ""
     send_mode: str = "off"
-    profile_path: Path = field(default_factory=lambda: Path("profil.md").resolve())
     daily_email_limit: int = 20
     max_iterations: int = 80
 
@@ -64,13 +62,6 @@ class Config:
     @property
     def sending_enabled(self) -> bool:
         return self.send_mode != "off" and self.smtp is not None
-
-    def load_profile(self) -> str | None:
-        """The seller's company and offer description, or None if not filled in yet."""
-        if not self.profile_path.is_file():
-            return None
-        text = self.profile_path.read_text(encoding="utf-8").strip()
-        return text or None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -109,6 +100,5 @@ class Config:
             airtable_token=(os.environ.get("AIRTABLE_TOKEN") or "").strip(),
             airtable_base_id=(os.environ.get("AIRTABLE_BASE_ID") or "").strip(),
             send_mode=send_mode,
-            profile_path=Path(os.environ.get("AIAGENT_PROFILE") or "profil.md").expanduser().resolve(),
             daily_email_limit=int(os.environ.get("AIAGENT_DAILY_EMAIL_LIMIT") or 20),
         )

@@ -161,19 +161,31 @@ def test_ares_company_validates_ico(registry):
 
 # --- system prompt ----------------------------------------------------------------
 
-def test_system_prompt_includes_profile(config, tmp_path):
-    config.profile_path = tmp_path / "profil.md"
-    config.profile_path.write_text("Prodáváme {sklady} pro e-shopy.", encoding="utf-8")
-    prompt = build_system_prompt(config, sending_enabled=False)
+def test_system_prompt_includes_profile(config):
+    prompt = build_system_prompt(config, sending_enabled=False, profile="Prodáváme {sklady} pro e-shopy.")
     assert "Prodáváme {sklady} pro e-shopy." in prompt
     assert "odesílání e-mailů je vypnuté" in prompt
 
 
-def test_system_prompt_without_profile(config, tmp_path):
-    config.profile_path = tmp_path / "chybi.md"
+def test_system_prompt_without_profile(config):
     prompt = build_system_prompt(config, sending_enabled=True)
-    assert "Profil zatím není vyplněný" in prompt
+    assert "Profil firmy zatím není vyplněný (Airtable" in prompt
     assert "Denní limit je 20" in prompt
+
+
+def test_profile_formatting_and_agent_loading(config, repos):
+    from aiagent.agent import Agent
+    from aiagent.repos import MemoryProfile, format_profile
+
+    assert format_profile({}) is None and format_profile({"Firma": "  "}) is None
+    repos.profile = MemoryProfile({"Firma": "Příklad s.r.o.", "Podpis": "Jan Novák\nPříklad s.r.o.",
+                                   "Neznámé pole": "ignoruje se"})
+    agent = Agent(config, build_registry(config, repos), client=object(), load_profile=repos.profile.load)
+    assert "### Firma\nPříklad s.r.o." in agent.system and "### Podpis\nJan Novák" in agent.system
+    assert "Neznámé pole" not in agent.system
+    repos.profile.fields["Firma"] = "Nový název s.r.o."
+    agent.reset()
+    assert "Nový název s.r.o." in agent.system
 
 
 # --- services ------------------------------------------------------------------------

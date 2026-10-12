@@ -60,7 +60,7 @@ jsi prošel, kolik je kvalifikovaných, kolik návrhů je připraveno a kolik e-
 uživatel je tam vidí a může je i sám upravovat, proto před prací načti aktuální stav.
 - Časové pásmo: {timezone}
 
-## Profil firmy
+## Profil firmy (z Airtable, tabulka Profil firmy)
 {profile}
 
 ## Nabízené služby (z Airtable, tabulka Služby)
@@ -81,9 +81,10 @@ SENDING_DISABLED = (
     "odesílání zapne."
 )
 PROFILE_MISSING = (
-    "Profil zatím není vyplněný (soubor {path}). Než začneš psát e-maily, zeptej se "
-    "uživatele, kdo firma je, čím se liší, na jaké reference se lze odvolat a jaký má být "
-    "podpis. Vyhledávat firmy můžeš i bez profilu, pokud zadání obor určuje."
+    "Profil firmy zatím není vyplněný (Airtable, tabulka Profil firmy). Než začneš psát "
+    "e-maily, požádej uživatele, aby ho vyplnil, případně se ho zeptej, kdo firma je, čím se "
+    "liší, na jaké reference se lze odvolat a jaký má být podpis. Vyhledávat firmy můžeš i bez "
+    "profilu, pokud zadání obor určuje."
 )
 SERVICES_INTRO = (
     "Nabízej jen tyto služby a čerpej z jejich popisu, přínosů a referencí; nic si nepřidávej. "
@@ -124,8 +125,8 @@ def format_services(services: list[dict[str, Any]]) -> str:
 
 
 def build_system_prompt(config: Config, sending_enabled: bool,
-                        services: list[dict[str, Any]] | None = None) -> str:
-    profile = config.load_profile() or PROFILE_MISSING.format(path=config.profile_path)
+                        services: list[dict[str, Any]] | None = None, profile: str | None = None) -> str:
+    profile = profile or PROFILE_MISSING
     if not sending_enabled:
         sending = SENDING_DISABLED
     elif config.send_mode == "auto":
@@ -167,6 +168,7 @@ class Agent:
         show_thinking: bool = False,
         audit: Any = None,
         load_services: Callable[[], list[dict[str, Any]]] | None = None,
+        load_profile: Callable[[], str | None] | None = None,
     ):
         self.config = config
         self.registry = registry
@@ -175,7 +177,9 @@ class Agent:
         self.events = events or AgentEvents()
         self.show_thinking = show_thinking
         self.load_services = load_services
+        self.load_profile = load_profile
         self.services: list[dict[str, Any]] = []
+        self.profile: str | None = None
         self.system = ""
         self._refresh_system_prompt()
         self.messages: list[dict[str, Any]] = []
@@ -187,13 +191,19 @@ class Agent:
         self._refresh_system_prompt()
 
     def _refresh_system_prompt(self) -> None:
+        if self.load_profile is not None:
+            try:
+                self.profile = self.load_profile()
+            except Exception as exc:
+                self.events.on_notice(f"Nepodařilo se načíst profil firmy z Airtable: {exc}")
         if self.load_services is not None:
             try:
                 self.services = self.load_services()
             except Exception as exc:
                 self.events.on_notice(f"Nepodařilo se načíst služby z Airtable: {exc}")
         self.system = build_system_prompt(
-            self.config, sending_enabled="send_email" in self.registry, services=self.services
+            self.config, sending_enabled="send_email" in self.registry,
+            services=self.services, profile=self.profile,
         )
 
     def run(self, user_input: str) -> str:

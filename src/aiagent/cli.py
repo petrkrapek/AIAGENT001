@@ -94,6 +94,7 @@ def auto_approver(name: str, tool_input: dict[str, Any]) -> bool:
 HELP = """Příkazy:
   /help    nápověda
   /leads   přehled leadů (potenciálních zákazníků)
+  /profil  profil firmy z Airtable
   /sluzby  nabízené služby z Airtable
   /tools   seznam nástrojů
   /tasks   otevřené úkoly
@@ -109,9 +110,9 @@ def chat(agent: Agent) -> None:
     else:
         print(yellow("! V Airtable (tabulka Služby) není žádná aktivní služba. "
                      "Popište, co nabízíte, a nastavte stav Aktivní."))
-    if agent.config.load_profile() is None:
-        print(yellow(f"! Chybí profil firmy ({agent.config.profile_path.name}). "
-                     "Zkopírujte profil.example.md jako profil.md a vyplňte ho."))
+    if agent.profile is None:
+        print(yellow("! V Airtable (tabulka Profil firmy) chybí profil. Vyplňte jeden řádek: "
+                     "kdo jste, ideální zákazník, tón e-mailů, podpis…"))
     modes = {
         "off": "Odesílání e-mailů je vypnuté: agent připraví jen návrhy.",
         "approve": "Odesílání e-mailů zapnuto, každý e-mail schvalujete.",
@@ -143,12 +144,17 @@ def chat(agent: Agent) -> None:
             for tool in agent.registry.server_tools:
                 print(f"  {tool['name']}{dim(' (server)')}")
             continue
+        if user_input in ("/profil", "/profile"):
+            agent.reset()
+            print(agent.profile or "Profil firmy v Airtable není vyplněný.")
+            print(dim("(Profil a služby znovu načteny, konverzace začíná znovu.)"))
+            continue
         if user_input in ("/sluzby", "/služby", "/services"):
             agent.reset()
             # Show the services without the instructions meant for the model.
             print(format_services(agent.services).split("\n\n", 1)[1] if agent.services
                   else "Žádné aktivní služby.")
-            print(dim("(Služby znovu načteny, konverzace začíná znovu.)"))
+            print(dim("(Profil a služby znovu načteny, konverzace začíná znovu.)"))
             continue
         if user_input in ("/leads", "/tasks"):
             tool = agent.registry.get("list_leads" if user_input == "/leads" else "list_tasks")
@@ -295,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
         build_registry(config, repos),
         audit=repos.audit,
         load_services=repos.services.list_active,
+        load_profile=repos.profile.load,
         approver=approver,
         events=ConsoleEvents(),
         show_thinking=args.show_thinking,

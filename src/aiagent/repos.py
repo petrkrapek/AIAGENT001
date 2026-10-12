@@ -131,6 +131,14 @@ class MemoryLeads:
         return sum(1 for e in self.sent if local_day(e["sent_at"], self.tz) == day)
 
 
+class MemoryProfile:
+    def __init__(self, fields: dict[str, Any] | None = None):
+        self.fields = fields or {}
+
+    def load(self) -> str | None:
+        return format_profile(self.fields)
+
+
 class MemoryServices:
     def __init__(self, services: list[dict[str, Any]] | None = None):
         self.services = services or []
@@ -205,6 +213,22 @@ def _lead_to_fields(changes: dict[str, Any]) -> dict[str, Any]:
     if "website" in changes:
         fields["Doména"] = domain(changes["website"]) or None
     return fields
+
+
+PROFILE_FIELDS = (
+    "Firma", "IČO", "Web", "O nás", "Čím se lišíme", "Ideální zákazník", "Koho neoslovovat",
+    "Obecné reference", "Výzva k akci", "Tón e-mailů", "Podpis",
+)
+
+
+def format_profile(fields: dict[str, Any]) -> str | None:
+    """Render the profile record for the system prompt; None if it is empty."""
+    parts = []
+    for name in PROFILE_FIELDS:
+        value = str(fields.get(name) or "").strip()
+        if value:
+            parts.append(f"### {name}\n{value}")
+    return "\n\n".join(parts) or None
 
 
 SERVICE_FIELDS = {
@@ -307,6 +331,19 @@ class AirtableLeads:
         return len(self.client.list_records(at.EMAILS, formula, fields=["Předmět"]))
 
 
+class AirtableProfile:
+    def __init__(self, client: at.AirtableClient):
+        self.client = client
+
+    def load(self) -> str | None:
+        """The company profile is the first non-empty row of the Profil firmy table."""
+        for record in self.client.list_records(at.PROFILE, max_records=10):
+            text = format_profile(record.get("fields", {}))
+            if text:
+                return text
+        return None
+
+
 class AirtableServices:
     def __init__(self, client: at.AirtableClient):
         self.client = client
@@ -384,12 +421,13 @@ class Repos:
     tasks: Any
     audit: Any
     services: Any
+    profile: Any
 
 
 def airtable_repos(client: at.AirtableClient, tz: str) -> Repos:
     return Repos(AirtableLeads(client, tz), AirtableTasks(client), AirtableAudit(client),
-                 AirtableServices(client))
+                 AirtableServices(client), AirtableProfile(client))
 
 
 def memory_repos(tz: str = "Europe/Prague") -> Repos:
-    return Repos(MemoryLeads(tz), MemoryTasks(), MemoryAudit(), MemoryServices())
+    return Repos(MemoryLeads(tz), MemoryTasks(), MemoryAudit(), MemoryServices(), MemoryProfile())

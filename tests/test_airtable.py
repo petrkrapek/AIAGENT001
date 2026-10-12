@@ -150,6 +150,7 @@ def test_setup_creates_missing_tables_and_fields(http, client):
     existing = {"tables": [{"id": "tblTasks", "name": "Úkoly", "fields": [{"name": "Název"}, {"name": "Stav"}]}]}
     fake = http(
         (200, existing),
+        (200, {"id": "tblProfile"}),          # create Profil firmy
         (200, {"id": "tblServices"}),         # create Služby
         (200, {"id": "tblLeads"}),            # create Leady
         (200, {"id": "tblEmails"}),           # create E-maily
@@ -157,17 +158,23 @@ def test_setup_creates_missing_tables_and_fields(http, client):
         (200, {"id": "tblAudit"}),            # create Audit
     )
     log = at.setup_base(client, "Europe/Prague")
-    assert log[0].startswith("Vytvořena tabulka Služby") and log[1].startswith("Vytvořena tabulka Leady")
-    services_fields = [f["name"] for f in fake.requests[1]["body"]["fields"]]
-    assert services_fields[:3] == ["Název", "Stav", "Popis"] and "Pokyny pro agenta" in services_fields
-    service_link = next(f for f in fake.requests[2]["body"]["fields"] if f["name"] == "Služba")
+    assert [line.split(" (")[0] for line in log[:4]] == [
+        "Vytvořena tabulka Profil firmy", "Vytvořena tabulka Služby",
+        "Vytvořena tabulka Leady", "Vytvořena tabulka E-maily",
+    ]
+    profile, services, leads, emails = (r["body"] for r in fake.requests[1:5])
+    assert profile["name"] == "Profil firmy"
+    assert [f["name"] for f in profile["fields"]][:3] == ["Firma", "IČO", "Web"]
+    assert "Podpis" in [f["name"] for f in profile["fields"]]
+    assert [f["name"] for f in services["fields"]][:3] == ["Název", "Stav", "Popis"]
+    service_link = next(f for f in leads["fields"] if f["name"] == "Služba")
     assert service_link["options"] == {"linkedTableId": "tblServices"}
-    lead_link = next(f for f in fake.requests[3]["body"]["fields"] if f["name"] == "Lead")
+    lead_link = next(f for f in emails["fields"] if f["name"] == "Lead")
     assert lead_link["options"] == {"linkedTableId": "tblLeads"}
-    added = [r["body"]["name"] for r in fake.requests[4:7]]
+    added = [r["body"]["name"] for r in fake.requests[5:8]]
     assert added == ["Termín", "Poznámka", "Vytvořeno"]
-    assert all(r["path"] == "/v0/meta/bases/appTEST/tables/tblTasks/fields" for r in fake.requests[4:7])
-    assert fake.requests[2]["body"]["fields"][0] == {"name": "Firma", "type": "singleLineText"}
+    assert all(r["path"] == "/v0/meta/bases/appTEST/tables/tblTasks/fields" for r in fake.requests[5:8])
+    assert leads["fields"][0] == {"name": "Firma", "type": "singleLineText"}
 
 
 def test_setup_adds_service_link_to_existing_leads(http, client):
@@ -179,7 +186,7 @@ def test_setup_adds_service_link_to_existing_leads(http, client):
     log = at.setup_base(client, "Europe/Prague")
     assert fake.requests[2]["body"] == {"name": "Služba", "type": "multipleRecordLinks",
                                         "options": {"linkedTableId": "tblServices"}}
-    assert "doplněno 1 polí (Služba)" in log[1]
+    assert any("doplněno 1 polí (Služba)" in line for line in log)
 
 
 def test_active_services(http, client):
@@ -270,3 +277,20 @@ def test_tools_round_trip_through_airtable(config):
         assert server.tables["Leady"]["rec1"]["fields"]["Stav"] == "Nekontaktovat"
         call(registry, "add_task", title="Zavolat", due="2026-10-20")
         assert server.tables["Úkoly"]["rec2"]["fields"]["Stav"] == "K vyřízení"
+
+
+def test_profile_reads_first_filled_row(http, client):
+    from aiagent.repos import AirtableProfile
+    fake = http((200, {"records": [
+        {"id": "rec1", "fields": {}},
+        {"id": "rec2", "fields": {"Firma": "Příklad s.r.o.", "Tón e-mailů": "Vykání, věcně."}},
+    ]}))
+    text = AirtableProfile(client).load()
+    assert text == "### Firma\nPříklad s.r.o.\n\n### Tón e-mailů\nVykání, věcně."
+    assert fake.requests[0]["path"] == "/v0/appTEST/Profil firmy"
+
+
+def test_profile_missing(http, client):
+    from aiagent.repos import AirtableProfile
+    http((200, {"records": []}))
+    assert AirtableProfile(client).load() is None

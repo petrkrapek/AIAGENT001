@@ -138,6 +138,7 @@ class AirtableClient:
 
 # --- schema --------------------------------------------------------------------
 
+PROFILE = "Profil firmy"
 SERVICES = "Služby"
 LEADS = "Leady"
 EMAILS = "E-maily"
@@ -191,7 +192,20 @@ def _datetime(name: str, timezone: str) -> dict[str, Any]:
 def schema(timezone: str) -> dict[str, list[dict[str, Any]]]:
     """Tables and fields; the first field of each table is its primary field."""
     return {
-        # Services first: Leady links to it.
+        PROFILE: [
+            _text("Firma"),
+            _text("IČO"),
+            {"name": "Web", "type": "url"},
+            _long("O nás"),
+            _long("Čím se lišíme"),
+            _long("Ideální zákazník"),
+            _long("Koho neoslovovat"),
+            _long("Obecné reference"),
+            _long("Výzva k akci"),
+            _long("Tón e-mailů"),
+            _long("Podpis"),
+        ],
+        # Services before Leady, which links to it.
         SERVICES: [
             _text("Název"),
             _select("Stav", [SERVICE_ACTIVE, SERVICE_INACTIVE]),

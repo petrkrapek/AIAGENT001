@@ -5,11 +5,4 @@ services:
     env_file: .env
     stdin_open: true
     tty: true
-    # Everything the agent stores goes to Airtable; only the profile is mounted (read-only).
-    volumes:
-      - type: bind
-        source: ./profil.md
-        target: /config/profil.md
-        read_only: true
-        bind:
-          create_host_path: false
+    # No volumes: profile, services and all data live in Airtable; configuration comes from .env.
