@@ -134,3 +134,146 @@ def test_cli_smtp_test(clean_env, capsys):
 def test_cli_rejects_auto_without_smtp(clean_env, capsys):
     assert main(["--send-mode", "auto", "smtp-test"]) == 2
     assert "vyžaduje" in capsys.readouterr().err
+
+
+# --- deliverability ----------------------------------------------------------------------
+
+def test_outreach_headers(config, repos):
+    from datetime import datetime as dt
+
+    from aiagent.tools.mail import within_hours
+    registry = build_registry(smtp_config(config, "approve"), repos)
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP") as smtp_cls:
+        registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz", subject="S", body="B")
+    sent = smtp_cls.return_value.__enter__.return_value.send_message.call_args[0][0]
+    assert sent["Date"] and sent["List-Unsubscribe"] == "<mailto:obchod@priklad.cz?subject=Odhlaseni>"
+    assert within_hours(dt(2026, 10, 12, 8, 0), (8, 17))         # Monday 8:00
+    assert not within_hours(dt(2026, 10, 12, 17, 0), (8, 17))    # Monday 17:00
+    assert not within_hours(dt(2026, 10, 17, 10, 0), (8, 17))    # Saturday
+    assert within_hours(dt(2026, 10, 17, 3, 0), None)
+
+
+def test_sending_window_is_enforced(config, repos):
+    from datetime import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    config = smtp_config(config, "approve")
+    config.send_hours = (8, 17)
+    registry = build_registry(config, repos)
+    assert "po–pá 8–17 h" in registry.get("send_email").description
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    send = dict(lead_id="rec00000000000001", to="info@alfa.cz", subject="S", body="B")
+    evening = dt(2026, 10, 12, 19, 30, tzinfo=ZoneInfo("Europe/Prague"))
+    with mock.patch("aiagent.tools.mail.now_in", return_value=evening), \
+            mock.patch("aiagent.tools.mail.smtplib.SMTP") as smtp_cls:
+        with pytest.raises(ToolError, match="mimo povolenou dobu"):
+            registry.get("send_email").handler(**send)
+    smtp_cls.assert_not_called()
+    assert repos.leads.get("rec00000000000001")["sending_started"] is None
+
+
+def test_pause_between_emails(config, repos):
+    config = smtp_config(config, "approve")
+    config.send_pause = (30, 90)
+    registry = build_registry(config, repos)
+    for domain in ("alfa", "beta"):
+        registry.get("save_lead").handler(company=domain, email=f"info@{domain}.cz",
+                                          email_source=f"https://{domain}.cz")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"), \
+            mock.patch("aiagent.tools.mail.time.sleep") as sleep, \
+            mock.patch("aiagent.tools.mail.time.monotonic", side_effect=[100.0, 110.0, 111.0]), \
+            mock.patch("aiagent.tools.mail.random.uniform", return_value=60.0):
+        registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz", subject="S", body="B")
+        sleep.assert_not_called()  # the first e-mail goes out right away
+        registry.get("send_email").handler(lead_id="rec00000000000002", to="info@beta.cz", subject="S", body="B")
+    sleep.assert_called_once_with(50.0)  # 60 s pause, 10 s already passed (e.g. while approving)
+
+
+def test_pause_and_hours_from_env(clean_env):
+    assert Config.from_env().send_pause == (30, 90) and Config.from_env().send_hours is None
+    clean_env.setenv("AIAGENT_SEND_PAUSE", "0")
+    clean_env.setenv("AIAGENT_SEND_HOURS", "8-17")
+    config = Config.from_env()
+    assert config.send_pause == (0, 0) and config.send_hours == (8, 17)
+    for bad in ("17-8", "8-25", "osm"):
+        clean_env.setenv("AIAGENT_SEND_HOURS", bad)
+        with pytest.raises(ValueError, match="AIAGENT_SEND_HOURS"):
+            Config.from_env().validate()
+
+
+# --- copy to the Sent folder (IMAP) --------------------------------------------------------------
+
+FOLDERS = [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Sent) "/" "Odeslan&AOk-"',
+           b'(\\HasNoChildren) "/" Archiv']
+
+
+@pytest.fixture
+def fake_imap():
+    with mock.patch("aiagent.tools.mail.imaplib.IMAP4_SSL") as imap_cls:
+        server = imap_cls.return_value.__enter__.return_value
+        server.list.return_value = ("OK", FOLDERS)
+        server.append.return_value = ("OK", [b"APPEND completed"])
+        yield server
+
+
+def test_imap_from_env_reuses_smtp_login(clean_env):
+    for key, value in {**SMTP_ENV, "IMAP_HOST": "imap.example.com"}.items():
+        clean_env.setenv(key, value)
+    imap = Config.from_env().imap
+    assert (imap.host, imap.port, imap.user, imap.password, imap.folder) == \
+        ("imap.example.com", 993, "obchod@priklad.cz", "tajne", "")
+
+
+def test_sent_folder_detection():
+    from aiagent.tools.mail import decode_folder, pick_sent_folder
+    assert decode_folder("Odeslan&AOk-") == "Odeslané" and decode_folder("A&-B") == "A&B"
+    flagged = [("INBOX", ""), ("Odeslan&AOk-", "\\Sent")]
+    assert pick_sent_folder(flagged) == "Odeslan&AOk-"
+    assert pick_sent_folder([("INBOX", ""), ("Sent Items", "")]) == "Sent Items"
+    assert pick_sent_folder(flagged, "odeslané") == "Odeslan&AOk-"  # typed with diacritics in .env
+    with pytest.raises(ToolError, match="IMAP_SENT_FOLDER"):
+        pick_sent_folder([("INBOX", "")])
+    with pytest.raises(ToolError, match="Dostupné složky: INBOX, Odeslané"):
+        pick_sent_folder(flagged, "Koš")
+
+
+def test_sent_email_is_copied_to_sent_folder(config, repos, fake_imap):
+    from aiagent.config import ImapConfig
+    config = smtp_config(config, "approve")
+    config.imap = ImapConfig(host="imap.example.com", user="u", password="p")
+    registry = build_registry(config, repos)
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"):
+        out = registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz",
+                                                 subject="Nabídka", body="Text")
+    assert "Kopii" not in out
+    fake_imap.login.assert_called_once_with("u", "p")
+    folder, flags, _, raw = fake_imap.append.call_args[0]
+    assert folder == '"Odeslan&AOk-"' and flags == "(\\Seen)"
+    assert b"To: info@alfa.cz\r\n" in raw and b"List-Unsubscribe:" in raw
+
+
+def test_failed_copy_does_not_fail_the_send(config, repos, fake_imap):
+    import imaplib
+
+    from aiagent.config import ImapConfig
+    config = smtp_config(config, "approve")
+    config.imap = ImapConfig(host="imap.example.com")
+    registry = build_registry(config, repos)
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    fake_imap.login.side_effect = imaplib.IMAP4.error("AUTHENTICATIONFAILED")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"):
+        out = registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz",
+                                                 subject="Nabídka", body="Text")
+    assert "odeslán" in out and "AUTHENTICATIONFAILED" in out
+    assert repos.leads.get("rec00000000000001")["status"] == "contacted"
+
+
+def test_cli_smtp_test_checks_imap(clean_env, capsys, fake_imap):
+    for key, value in {**SMTP_ENV, "IMAP_HOST": "imap.example.com"}.items():
+        clean_env.setenv(key, value)
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"):
+        assert main(["smtp-test"]) == 0
+    assert "do složky Odeslané" in capsys.readouterr().out
+    fake_imap.append.assert_not_called()

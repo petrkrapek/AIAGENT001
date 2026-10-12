@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import Config
-from ..repos import now_iso
+from ..repos import block_lead, describe_blocked, find_blocked, now_iso
 from . import Tool, ToolError, schema, truncate
 
 STATUSES = (
@@ -30,6 +30,8 @@ def format_lead(lead: dict[str, Any], full: bool = False, emails: list[dict[str,
     extras = [x for x in (lead.get("city"), lead.get("email"), lead.get("website")) if x]
     if extras:
         line += f" | {' | '.join(extras)}"
+    if lead.get("sending_started"):
+        line += f" | ODESLÁNÍ NEPOTVRZENO (zahájeno {lead['sending_started']}, zkontroluje uživatel)"
     if not full:
         return line
     rows = [line]
@@ -50,7 +52,24 @@ def _check_service(service_id: str | None) -> None:
         raise ToolError("service_id je ID služby z tabulky Služby (začíná 'rec'), viz přehled služeb.")
 
 
-def build(config: Config, repo: Any) -> list[Tool]:
+def check_not_blocked(blocklist: Any, email: str | None, website: str | None, ico: str | None) -> None:
+    entry = find_blocked(blocklist.entries(), email, website, ico)
+    if entry:
+        raise ToolError(
+            f"Firma nebo kontakt je v tabulce Blokované kontakty ({describe_blocked(entry)}). "
+            "Neukládej ji a neoslovuj, pokračuj dalšími."
+        )
+
+
+def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
+    def record_opt_out(lead: dict[str, Any]) -> str:
+        """Copy an opt-out to the blocklist, so it survives deleting the lead in Airtable."""
+        try:
+            block_lead(blocklist, lead)
+        except Exception as exc:
+            return f" Pozor: zápis do tabulky Blokované kontakty selhal ({exc}); upozorni uživatele."
+        return ""
+
     def save_lead(
         company: str,
         ico: str | None = None,
@@ -71,6 +90,8 @@ def build(config: Config, repo: Any) -> list[Tool]:
             raise ToolError(f"Neplatný stav '{status}'.")
         if email and not email_source:
             raise ToolError("U e-mailu uveď email_source (URL stránky, kde je zveřejněný).")
+        if status != "do_not_contact":
+            check_not_blocked(blocklist, email, website, ico)
         duplicate = repo.find_duplicate(ico, email, website)
         if duplicate:
             return f"Lead už existuje, neukládám znovu: {format_lead(duplicate)}"
@@ -80,7 +101,8 @@ def build(config: Config, repo: Any) -> list[Tool]:
             "city": city, "industry": industry, "fit_reason": fit_reason, "notes": notes,
             "status": status, "service_id": service_id,
         })
-        return f"Uloženo: {format_lead(lead)}"
+        warning = record_opt_out(lead) if status == "do_not_contact" else ""
+        return f"Uloženo: {format_lead(lead)}{warning}"
 
     def list_leads(status: str | None = None, query: str | None = None) -> str:
         if status is not None and status not in STATUSES:
@@ -109,13 +131,16 @@ def build(config: Config, repo: Any) -> list[Tool]:
         _check_service(changes.get("service_id"))
         if changes.get("email") and not (changes.get("email_source") or repo.get(id).get("email_source")):
             raise ToolError("U e-mailu uveď email_source (URL stránky, kde je zveřejněný).")
-        return f"Upraveno: {format_lead(repo.update(id, changes))}"
+        lead = repo.update(id, changes)
+        warning = record_opt_out(lead) if changes.get("status") == "do_not_contact" else ""
+        return f"Upraveno: {format_lead(lead)}{warning}"
 
     def save_draft(id: str, subject: str, body: str, service_id: str | None = None) -> str:
         _check_service(service_id)
         lead = repo.get(id)
         if lead["status"] == "do_not_contact":
             raise ToolError("Tento kontakt si nepřeje být oslovován.")
+        check_not_blocked(blocklist, lead.get("email"), lead.get("website"), lead.get("ico"))
         changes: dict[str, Any] = {"draft": {"subject": subject, "body": body, "updated_at": now_iso()}}
         if service_id:
             changes["service_id"] = service_id

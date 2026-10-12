@@ -121,8 +121,8 @@ def test_send_refuses_do_not_contact(smtp_config, repos, fake_smtp):
 def test_email_only_opt_out_blocks_company_domain(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)
     add_lead(registry, company="Gama", ico="5", website=None, email="info@gama.cz", status="do_not_contact")
-    assert "už existuje" in add_lead(registry, company="Gama obchod", ico="6", website=None,
-                                     email="obchod@gama.cz")
+    with pytest.raises(ToolError, match="Blokované kontakty"):
+        add_lead(registry, company="Gama obchod", ico="6", website=None, email="obchod@gama.cz")
     repos.leads.create({"company": "Gama obchod", "email": "obchod@gama.cz", "status": "qualified"})
     with pytest.raises(ToolError, match="nepřeje"):
         call(registry, "send_email", lead_id=rid(2), to="obchod@gama.cz", subject="x", body="y")
@@ -163,12 +163,69 @@ def test_not_interested_is_not_contacted(smtp_config, repos, fake_smtp):
 def test_sent_email_is_not_resent_when_recording_fails(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)
     add_lead(registry)
-    with mock.patch.object(repos.leads, "update", side_effect=RuntimeError("Airtable 503")):
+    with mock.patch.object(repos.leads, "add_email", side_effect=RuntimeError("Airtable 503")):
         out = call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
     assert "BYL odeslán" in out and "Neodesílej" in out
     with pytest.raises(ToolError, match="v tomto běhu"):
         call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    # A later run (cron) doesn't know about this process: the mark in Airtable blocks the lead.
+    registry = build_registry(smtp_config, repos)
+    with pytest.raises(ToolError, match="nebylo potvrzeno"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
     assert fake_smtp.send_message.call_count == 1
+    assert "ODESLÁNÍ NEPOTVRZENO" in call(registry, "list_leads")
+
+
+def test_no_send_without_the_mark(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with mock.patch.object(repos.leads, "update", side_effect=RuntimeError("Airtable 503")):
+        with pytest.raises(ToolError, match="neodeslán"):
+            call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    fake_smtp.send_message.assert_not_called()
+
+
+def test_successful_send_clears_the_mark(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    assert repos.leads.get(rid(1))["sending_started"] is None
+
+
+def test_refused_send_clears_the_mark(smtp_config, repos, fake_smtp):
+    import smtplib
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    fake_smtp.send_message.side_effect = smtplib.SMTPRecipientsRefused({"info@alfa.cz": (550, b"no")})
+    with pytest.raises(ToolError, match="selhalo"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    lead = repos.leads.get(rid(1))
+    assert lead["sending_started"] is None and lead["status"] == "qualified"
+
+
+def test_ambiguous_send_keeps_the_lead_blocked(smtp_config, repos, fake_smtp):
+    import smtplib
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    fake_smtp.send_message.side_effect = smtplib.SMTPServerDisconnected("spojení ukončeno")
+    with pytest.raises(ToolError, match="Odeslané"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    assert repos.leads.get(rid(1))["sending_started"]
+    fake_smtp.send_message.side_effect = None
+    with pytest.raises(ToolError, match="nebylo potvrzeno"):
+        call(build_registry(smtp_config, repos), "send_email", lead_id=rid(1), to="info@alfa.cz",
+             subject="x", body="y")
+    assert fake_smtp.send_message.call_count == 1
+
+
+def test_failing_quit_after_accepted_message_counts_as_sent(smtp_config, repos):
+    import smtplib
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP") as smtp_cls:
+        smtp_cls.return_value.__exit__.side_effect = smtplib.SMTPResponseException(421, b"bye")
+        assert "odeslán" in call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    assert repos.leads.get(rid(1))["status"] == "contacted"
 
 
 def test_opt_out_can_only_be_lifted_by_a_person(registry):
@@ -176,6 +233,66 @@ def test_opt_out_can_only_be_lifted_by_a_person(registry):
     with pytest.raises(ToolError, match="jen uživatel"):
         call(registry, "update_lead", id=rid(1), status="qualified")
     assert "Upraveno" in call(registry, "update_lead", id=rid(1), notes="Odhlásil se 12. 10.")
+
+
+# --- blocked contacts ----------------------------------------------------------------
+
+def test_blocklist_entries_typed_by_a_person(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    repos.leads.create({"company": "Konkurence", "website": "konkurence.cz", "email": "info@konkurence.cz",
+                        "status": "qualified"})
+    repos.blocklist.block(name="Konkurence", domain="https://www.Konkurence.cz/", reason="konkurent")
+    repos.blocklist.block(name="Stálý zákazník", ico="123 45 678")
+    for kwargs in ({"website": "https://eshop.konkurence.cz"}, {"email": "obchod@konkurence.cz"},
+                   {"ico": "12345678", "website": "zakaznik.cz", "email": None}):
+        with pytest.raises(ToolError, match="Blokované kontakty"):
+            add_lead(registry, company="X", **{"ico": None, **kwargs})
+    # Leads saved before the row was added can't get a draft or an e-mail either.
+    with pytest.raises(ToolError, match="konkurent"):
+        call(registry, "save_draft", id=rid(1), subject="x", body="y")
+    with pytest.raises(ToolError, match="Blokované kontakty"):
+        call(registry, "send_email", lead_id=rid(1), to="info@konkurence.cz", subject="x", body="y")
+    fake_smtp.send_message.assert_not_called()
+    assert add_lead(registry).startswith("Uloženo")
+
+
+def test_opt_out_survives_deleting_the_lead(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    call(registry, "update_lead", id=rid(1), status="do_not_contact")
+    assert [r["email"] for r in repos.blocklist.rows] == ["info@alfa.cz"]
+    del repos.leads.leads[rid(1)]  # someone deletes the row in Airtable
+    with pytest.raises(ToolError, match="Blokované kontakty"):
+        add_lead(registry, email="jan@alfa.cz")
+    repos.leads.create({"company": "Alfa", "email": "jan@alfa.cz", "status": "qualified"})
+    with pytest.raises(ToolError, match="Blokované kontakty"):
+        call(registry, "send_email", lead_id=rid(2), to="jan@alfa.cz", subject="x", body="y")
+    fake_smtp.send_message.assert_not_called()
+    call(registry, "update_lead", id=rid(2), status="do_not_contact")
+    assert len(repos.blocklist.rows) == 1  # already covered by the company domain
+
+
+def test_freemail_opt_out_blocks_only_that_address(registry, repos):
+    add_lead(registry, company="Pekař", ico=None, website=None, email="pekar@seznam.cz", status="do_not_contact")
+    assert repos.blocklist.entries()[0]["domain"] == ""
+    assert add_lead(registry, company="Řezník", ico=None, website=None, email="reznik@seznam.cz").startswith("Uloženo")
+
+
+def test_failed_blocklist_write_is_reported(registry, repos):
+    add_lead(registry)
+    with mock.patch.object(repos.blocklist, "add", side_effect=RuntimeError("Airtable 503")):
+        out = call(registry, "update_lead", id=rid(1), status="do_not_contact")
+    assert "[do_not_contact]" in out and "Blokované kontakty selhal" in out
+
+
+def test_sync_copies_opt_outs_set_by_hand(repos):
+    from aiagent.repos import sync_blocklist
+    repos.leads.create({"company": "Alfa", "email": "info@alfa.cz", "website": "alfa.cz", "status": "do_not_contact"})
+    repos.leads.create({"company": "Beta", "email": "a@beta.cz", "status": "qualified"})
+    repos.leads.create({"company": "Gama", "ico": "5", "status": "do_not_contact"})
+    assert sync_blocklist(repos.leads, repos.blocklist) == 2
+    assert sync_blocklist(repos.leads, repos.blocklist) == 0
+    assert {e["name"] for e in repos.blocklist.entries()} == {"Alfa", "Gama"}
 
 
 def test_daily_limit(smtp_config, repos, fake_smtp):

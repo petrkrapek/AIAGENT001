@@ -43,18 +43,19 @@ Mám návrhy odeslat?
 
 ## Airtable
 
-Agent používá ve vaší bázi šest tabulek. Vytvoří je sám příkazem `aiagent airtable-setup`:
+Agent používá ve vaší bázi sedm tabulek. Vytvoří je sám příkazem `aiagent airtable-setup`:
 
 | Tabulka | Obsah |
 |---|---|
 | **Profil firmy** | kdo jste, ideální zákazník, tón e-mailů, podpis; **vyplňujete vy** (jeden řádek), agent jen čte |
 | **Služby** | co nabízíte; **vyplňujete vy**, agent jen čte |
-| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, nabízená služba, návrh e-mailu (předmět, text, **schválení návrhu**), kdy byl naposledy osloven |
+| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, nabízená služba, návrh e-mailu (předmět, text, **schválení návrhu**), kdy byl naposledy osloven, nepotvrzené odeslání (*Odesílání zahájeno*) |
 | **E-maily** | každý odeslaný e-mail: předmět, text, komu, kdy, propojený s leadem |
 | **Úkoly** | připomínky a follow-upy s termínem |
+| **Blokované kontakty** | koho agent nikdy neosloví: odhlášené kontakty zapisuje sám, konkurenci nebo stávající zákazníky **doplňujete vy** |
 | **Audit** | záznam každé akce agenta: nástroj, vstup, čas, schválení a výsledek |
 
-Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví a sám tento stav zrušit nemůže, to jde jen ručně v Airtable. Stav, který agent nezná (třeba vlastní nebo přejmenovaný), bere z opatrnosti jako „Nekontaktovat“.
+Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví a sám tento stav zrušit nemůže, to jde jen ručně v Airtable. Kontakt si zároveň zapíše do tabulky Blokované kontakty (ručně nastavené stavy převezme při dalším spuštění), takže blokace platí, i když lead smažete. Stav, který agent nezná (třeba vlastní nebo přejmenovaný), bere z opatrnosti jako „Nekontaktovat“.
 
 **Schválení návrhu:** když agent uloží nebo změní návrh e-mailu, nastaví pole *Schválení návrhu* na „Čeká na schválení“. Návrh si v Airtable přečtěte, případně upravte, a přepněte na „Schváleno“. Toto pole agent nikdy nenastavuje sám. V režimu `auto` odešle jen takto schválené návrhy, beze změny textu.
 
@@ -68,11 +69,25 @@ Jeden řádek s tím, co platí pro firmu jako celek. Agent ho čte před každo
 | O nás | jedna až dvě věty, čím se firma zabývá |
 | Čím se lišíme | v čem jste lepší než konkurence |
 | Ideální zákazník | obor, velikost, region a signály, že nabídku potřebují (u služeb jde upřesnit v poli „Pro koho“) |
-| Koho neoslovovat | konkurence, stávající zákazníci, veřejná správa… |
+| Koho neoslovovat | obecná pravidla, např. veřejná správa, firmy nad 250 zaměstnanců (konkrétní firmy patří do tabulky Blokované kontakty) |
 | Obecné reference | pravdivé výsledky a reference firmy (reference ke konkrétní službě patří do tabulky Služby) |
 | Výzva k akci | co má adresát udělat, např. 15minutový hovor |
 | Tón e-mailů | např. „vykání, věcně, bez superlativů, do 150 slov“ |
 | Podpis | jméno, funkce, firma, telefon, e-mail, web |
+
+### Tabulka Blokované kontakty
+
+Firmy a adresy, které agent nesmí uložit ani oslovit. Každý řádek blokuje podle vyplněných polí:
+
+| Pole | Co do něj napsat |
+|---|---|
+| Název | pro vaši orientaci, např. název firmy |
+| E-mail | konkrétní adresa |
+| Doména | doména nebo web firmy (`konkurence.cz` i `https://www.konkurence.cz/`); blokuje i její subdomény a všechny adresy na ní |
+| IČO | IČO firmy (mezery nevadí) |
+| Důvod | např. „konkurence“, „stávající zákazník“, „odhlásil se“ |
+
+Sem patří konkurence a stávající zákazníci. Agent sem sám zapisuje kontakty ve stavu Nekontaktovat. U adresy na veřejné schránce (Seznam, Gmail…) blokuje jen tu adresu, ne celou doménu. Řádek smažte, jen když kontakt opravdu znovu oslovovat chcete.
 
 ### Tabulka Služby
 
@@ -183,6 +198,17 @@ AIAGENT_SEND_MODE=approve
 
 Nastavení ověříte příkazem `aiagent smtp-test` (v Dockeru `docker compose run --rm agent smtp-test`). S `--to vas@email.cz` zároveň pošle testovací e-mail.
 
+**Kopie ve složce Odeslané:** SMTP server odeslaný e-mail obvykle do vaší schránky neuloží (výjimkou je třeba Gmail). Aby byly e-maily od agenta vidět ve složce Odeslané, doplňte IMAP stejné schránky:
+
+```ini
+# Seznam: imap.seznam.cz (port 993, SSL)
+IMAP_HOST=imap.seznam.cz
+# přihlášení se převezme ze SMTP_USER a SMTP_PASSWORD; jinak IMAP_USER a IMAP_PASSWORD
+# složku Odeslané agent najde sám; jinak IMAP_SENT_FOLDER=Odeslané
+```
+
+Agent pak každý odeslaný e-mail uloží jako přečtený do složky Odeslané. Když se kopie uložit nepodaří, e-mail je i tak odeslaný a agent na to upozorní. `smtp-test` ověří i IMAP a vypíše, do které složky bude kopie ukládat. U Gmailu IMAP nenastavujte, e-maily by ve složce Odeslané byly dvakrát. Microsoft 365 přihlášení k IMAP heslem nepovoluje, tam tuto funkci nevyužijete.
+
 Režim odesílání určuje `AIAGENT_SEND_MODE` v `.env` nebo přepínač `--send-mode`:
 
 | Režim | Co dělá | Kdy použít |
@@ -191,7 +217,9 @@ Režim odesílání určuje `AIAGENT_SEND_MODE` v `.env` nebo přepínač `--sen
 | `approve` | před každým e-mailem ukáže celý text a čeká na „a“ | chat (výchozí, když je SMTP nastavené) |
 | `auto` | odesílá bez ptaní, ale jen návrhy, které jste v Airtable schválili (*Schválení návrhu* = Schváleno), beze změny textu; nikdy neposílá follow-upy | běh bez terminálu: cron, `docker compose run -T` |
 
-Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. E-mail jde vždy jen na adresu uloženou u leadu, a to jedné osobě (žádné kopie ani seznamy adres). Typický postup s režimem `auto`: cron ráno najde firmy a připraví návrhy, vy je během dne schválíte v Airtable a další běh je odešle.
+Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), náhodná pauza mezi e-maily (`AIAGENT_SEND_PAUSE`), volitelně doba odesílání jen v pracovní dny a hodiny (`AIAGENT_SEND_HOURS`), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. E-mail jde vždy jen na adresu uloženou u leadu, a to jedné osobě (žádné kopie ani seznamy adres). Každý e-mail má hlavičku `List-Unsubscribe`, takže poštovní programy u něj ukážou tlačítko pro odhlášení; žádost o odhlášení přijde jako odpověď na adresu odesílatele.
+
+**Ochrana proti dvojímu odeslání:** těsně před odesláním agent zapíše k leadu čas do pole *Odesílání zahájeno* a po úspěšném zápisu do tabulky E-maily ho zase vymaže. Když se výsledek odeslání nepodaří zapsat (výpadek Airtable, spojení se SMTP serverem spadne uprostřed odesílání), pole zůstane vyplněné a agent leadu žádný další e-mail nepošle, ani v příštím běhu. Zkontrolujte ve schránce složku Odeslané: pokud e-mail odešel, nastavte stav Osloven, pokud ne, stačí pole vymazat. Typický postup s režimem `auto`: cron ráno najde firmy a připraví návrhy, vy je během dne schválíte v Airtable a další běh je odešle.
 
 ## Použití
 
@@ -237,6 +265,8 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIAGENT_MODEL` | `claude-opus-5-5` | model Claude |
 | `AIAGENT_EFFORT` | `medium` | hloubka uvažování (`low` až `max`); vyšší je pečlivější, ale dražší a pomalejší |
 | `AIAGENT_DAILY_EMAIL_LIMIT` | `20` | maximum odeslaných e-mailů za den |
+| `AIAGENT_SEND_PAUSE` | `30-90` | náhodná pauza v sekundách mezi dvěma e-maily jednoho běhu (`0` = bez pauzy); počítá se do ní i čas, kdy e-mail schvalujete |
+| `AIAGENT_SEND_HOURS` | – | doba odesílání ve všední dny, např. `8-17` (od 8:00 do 16:59); prázdné = kdykoli |
 | `AIAGENT_SUBAGENTS` | `1` | každou firmu prověřuje samostatný krátký běh agenta (`0` = vše v jedné konverzaci) |
 | `AIAGENT_SUBAGENT_MODEL` | jako `AIAGENT_MODEL` | model pro prověřování firem (např. levnější `claude-sonnet-5-5`) |
 | `AIAGENT_CONTEXT_TRIGGER` | `60000` | od kolika tokenů v požadavku se ze starší historie mažou výsledky nástrojů (stránky webů, výsledky hledání); `0` = vypnuto |
@@ -244,6 +274,7 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | – | SMTP server pro odesílání |
+| `IMAP_HOST`, `IMAP_PORT`, `IMAP_USER`, `IMAP_PASSWORD`, `IMAP_SENT_FOLDER` | –, `993` | ukládání kopií odeslaných e-mailů do složky Odeslané (IMAP přes SSL; přihlášení výchozí ze SMTP) |
 | `AIAGENT_LOG_LEVEL` | `WARNING` | logování na stderr; `INFO` vypíše u každého volání modelu spotřebu tokenů a request id |
 | `AIAGENT_ENV_FILE` | `.env` | jiný konfigurační soubor (načítá se jen z aktuální složky, ne z nadřazených) |
 | `NO_COLOR` | – | vypne barevný výstup |
@@ -309,5 +340,6 @@ uv pip compile pyproject.toml --python-version 3.13 --python-platform linux --ge
 
 - Agent čte cizí weby, které mohou obsahovat podstrčené pokyny (prompt injection). Proto každý HTTP požadavek schvalujete vy, požadavky na vnitřní a neveřejné adresy jsou zakázané (i přes přesměrování) a model má výslovný pokyn obsah webů brát jen jako data.
 - E-mail jde jen na adresu uloženou u leadu, jedné osobě. Bez terminálu jen schválené návrhy z Airtable.
+- Odhlášení a blokace (tabulka Blokované kontakty) kontroluje kód při ukládání leadu, návrhu i při odeslání, nespoléhá na model.
 - Hodnoty, které vypadají jako tajné (hlavičky `Authorization`, tokeny, hesla), se v auditu i na obrazovce maskují. Řídicí znaky z textů modelu a webů se před výpisem odstraňují, aby nešlo podvrhnout, co schvalujete.
 - Klíče jsou jen v `.env`, který není v gitu ani v Docker image. Kontejner běží pod neprivilegovaným uživatelem a nic neukládá.

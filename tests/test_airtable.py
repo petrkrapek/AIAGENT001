@@ -198,6 +198,7 @@ def test_setup_creates_missing_tables_and_fields(http, client):
         (200, {"id": "tblLeads"}),            # create Leady
         (200, {"id": "tblEmails"}),           # create E-maily
         (200, {}), (200, {}), (200, {}),      # 3 missing fields in Úkoly
+        (200, {"id": "tblBlocked"}),          # create Blokované kontakty
         (200, {"id": "tblAudit"}),            # create Audit
     )
     log = at.setup_base(client, "Europe/Prague")
@@ -218,6 +219,10 @@ def test_setup_creates_missing_tables_and_fields(http, client):
     assert added == ["Termín", "Poznámka", "Vytvořeno"]
     assert all(r["path"] == "/v0/meta/bases/appTEST/tables/tblTasks/fields" for r in fake.requests[5:8])
     assert leads["fields"][0] == {"name": "Firma", "type": "singleLineText"}
+    assert "Odesílání zahájeno" in [f["name"] for f in leads["fields"]]
+    blocked = fake.requests[8]["body"]
+    assert blocked["name"] == "Blokované kontakty"
+    assert [f["name"] for f in blocked["fields"]] == ["Název", "E-mail", "Doména", "IČO", "Důvod", "Přidáno"]
 
 
 def test_setup_adds_service_link_to_existing_leads(http, client):
@@ -300,7 +305,7 @@ class StatefulAirtable:
 
 def test_tools_round_trip_through_airtable(config):
     from aiagent.repos import airtable_repos
-    from aiagent.tools import build_registry
+    from aiagent.tools import ToolError, build_registry
     from conftest import call
 
     server = StatefulAirtable()
@@ -321,8 +326,13 @@ def test_tools_round_trip_through_airtable(config):
         assert "Dobrý den" in call(registry, "get_lead", id="rec00000000000001")
         call(registry, "update_lead", id="rec00000000000001", status="do_not_contact", notes="Odhlásil se")
         assert server.tables["Leady"]["rec00000000000001"]["fields"]["Stav"] == "Nekontaktovat"
+        blocked = server.tables["Blokované kontakty"]["rec00000000000002"]["fields"]
+        assert (blocked["Název"], blocked["E-mail"], blocked["Doména"]) == ("Alfa s.r.o.", "info@alfa.cz", "alfa.cz")
+        with pytest.raises(ToolError, match="Blokované kontakty"):
+            call(registry, "save_lead", company="Alfa pobočka", email="jan@alfa.cz",
+                 email_source="https://alfa.cz/kontakt")
         call(registry, "add_task", title="Zavolat", due="2026-10-20")
-        assert server.tables["Úkoly"]["rec00000000000002"]["fields"]["Stav"] == "K vyřízení"
+        assert server.tables["Úkoly"]["rec00000000000003"]["fields"]["Stav"] == "K vyřízení"
 
 
 def test_profile_reads_first_filled_row(http, client):
@@ -364,3 +374,23 @@ def test_tasks_list_and_missing_task(http, client):
     from aiagent.tools import ToolError
     with pytest.raises(ToolError, match="neexistuje"):
         tasks.update("recAAAAAAAAAAAAAA", {"status": "done"})
+
+
+def test_blocklist_rows_are_normalized(http, client):
+    from aiagent.repos import AirtableBlocklist, blocked_entry, find_blocked
+    fake = http(
+        (200, {"records": [{"id": "rec1", "fields": {"Název": "Konkurence", "Doména": "https://www.Konkurence.cz/",
+                                                     "IČO": "123 45 678", "Důvod": "konkurent"}}]}),
+        (200, {"records": [{"id": "rec2", "fields": {}}]}),
+    )
+    blocklist = AirtableBlocklist(client)
+    entries = blocklist.entries()
+    assert entries == [{"name": "Konkurence", "email": "", "domain": "konkurence.cz", "ico": "12345678",
+                        "reason": "konkurent"}]
+    assert fake.requests[0]["path"] == "/v0/appTEST/Blokované kontakty"
+    assert find_blocked(entries, website="https://eshop.konkurence.cz") is entries[0]
+    assert find_blocked(entries, ico="12345678") is entries[0]
+    assert find_blocked(entries, email="info@nekonkurence.cz") is None
+    blocklist.add(blocked_entry("Alfa", "Info@Alfa.cz", None, None, "odhlášení"))
+    fields = fake.requests[1]["body"]["records"][0]["fields"]
+    assert fields["E-mail"] == "info@alfa.cz" and fields["Doména"] is None and fields["Přidáno"]

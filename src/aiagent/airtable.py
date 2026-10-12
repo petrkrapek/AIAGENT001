@@ -170,6 +170,7 @@ SERVICES = "Služby"
 LEADS = "Leady"
 EMAILS = "E-maily"
 TASKS = "Úkoly"
+BLOCKED = "Blokované kontakty"
 AUDIT = "Audit"
 
 LEAD_STATUS_LABELS = {
@@ -266,6 +267,9 @@ def schema(timezone: str) -> dict[str, list[dict[str, Any]]]:
             _datetime("Návrh upraven", timezone),
             _select("Schválení návrhu", [DRAFT_PENDING, DRAFT_APPROVED]),
             _datetime("Naposledy osloven", timezone),
+            # Set just before an SMTP send, cleared once the send is recorded; a leftover value
+            # blocks the lead until a person checks whether the e-mail went out.
+            _datetime("Odesílání zahájeno", timezone),
             _datetime("Vytvořeno", timezone),
             _datetime("Aktualizováno", timezone),
         ],
@@ -284,6 +288,16 @@ def schema(timezone: str) -> dict[str, list[dict[str, Any]]]:
              "options": {"dateFormat": {"name": "european", "format": "D/M/YYYY"}}},
             _long("Poznámka"),
             _datetime("Vytvořeno", timezone),
+        ],
+        # Kept apart from Leady, so an opt-out survives deleting the lead; people add their own rows
+        # (competitors, existing customers) by e-mail, domain or IČO.
+        BLOCKED: [
+            _text("Název"),
+            {"name": "E-mail", "type": "email"},
+            _text("Doména"),
+            _text("IČO"),
+            _long("Důvod"),
+            _datetime("Přidáno", timezone),
         ],
         AUDIT: [
             _text("Nástroj"),
