@@ -1,18 +1,17 @@
-"""A simple persistent task list stored as JSON in the workspace."""
+"""Task list (follow-up reminders) stored in Airtable."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from ..config import Config
-from ..storage import JsonStore, now_iso as _now
 from . import Tool, ToolError, schema
 
 STATUSES = ("todo", "in_progress", "done", "cancelled")
 
 
 def _format(task: dict[str, Any]) -> str:
-    line = f"#{task['id']} [{task['status']}] {task['title']}"
+    line = f"{task['id']} [{task['status']}] {task['title']}"
     if task.get("due"):
         line += f" (termín: {task['due']})"
     if task.get("notes"):
@@ -20,36 +19,18 @@ def _format(task: dict[str, Any]) -> str:
     return line
 
 
-def build(config: Config) -> list[Tool]:
-    store = JsonStore(config.workspace / ".aiagent" / "tasks.json")
-
+def build(config: Config, repo: Any) -> list[Tool]:
     def add_task(title: str, due: str | None = None, notes: str | None = None) -> str:
-        tasks = store.load()
-        task = {
-            "id": store.next_id(tasks),
-            "title": title,
-            "status": "todo",
-            "due": due,
-            "notes": notes,
-            "created_at": _now(),
-            "updated_at": _now(),
-        }
-        tasks.append(task)
-        store.save(tasks)
-        return f"Přidán úkol {_format(task)}"
+        return f"Přidán úkol {_format(repo.create(title, due, notes))}"
 
     def list_tasks(status: str | None = None) -> str:
-        tasks = store.load()
-        if status:
-            tasks = [t for t in tasks if t["status"] == status]
-        else:
-            tasks = [t for t in tasks if t["status"] not in ("done", "cancelled")]
-        if not tasks:
-            return "Žádné úkoly."
-        return "\n".join(_format(t) for t in tasks)
+        if status is not None and status not in STATUSES:
+            raise ToolError(f"Neplatný stav '{status}', povolené: {', '.join(STATUSES)}.")
+        tasks = repo.list(status)
+        return "\n".join(_format(t) for t in tasks) if tasks else "Žádné úkoly."
 
     def update_task(
-        id: int,
+        id: str,
         status: str | None = None,
         title: str | None = None,
         due: str | None = None,
@@ -57,21 +38,14 @@ def build(config: Config) -> list[Tool]:
     ) -> str:
         if status is not None and status not in STATUSES:
             raise ToolError(f"Neplatný stav '{status}', povolené: {', '.join(STATUSES)}.")
-        tasks = store.load()
-        for task in tasks:
-            if task["id"] == id:
-                for key, value in (("status", status), ("title", title), ("due", due), ("notes", notes)):
-                    if value is not None:
-                        task[key] = value
-                task["updated_at"] = _now()
-                store.save(tasks)
-                return f"Upraveno: {_format(task)}"
-        raise ToolError(f"Úkol #{id} neexistuje.")
+        changes = {k: v for k, v in (("status", status), ("title", title), ("due", due), ("notes", notes))
+                   if v is not None}
+        return f"Upraveno: {_format(repo.update(id, changes))}"
 
     return [
         Tool(
             name="add_task",
-            description="Přidá úkol do seznamu úkolů uživatele.",
+            description="Přidá úkol (např. připomínku follow-upu) do tabulky Úkoly v Airtable.",
             input_schema=schema(
                 {
                     "title": {"type": "string", "description": "Krátký název úkolu."},
@@ -96,7 +70,7 @@ def build(config: Config) -> list[Tool]:
             description="Změní stav, název, termín nebo poznámku existujícího úkolu.",
             input_schema=schema(
                 {
-                    "id": {"type": "integer", "description": "Číslo úkolu."},
+                    "id": {"type": "string", "description": "ID úkolu v Airtable (rec…)."},
                     "status": {"type": "string", "enum": list(STATUSES)},
                     "title": {"type": "string"},
                     "due": {"type": "string", "description": "YYYY-MM-DD"},

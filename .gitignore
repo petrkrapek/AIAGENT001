@@ -7,6 +7,5 @@ build/
 dist/
 .pytest_cache/
 
-# Lokální konfigurace a data agenta
+# Lokální konfigurace
 .env
-workspace/

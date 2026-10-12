@@ -2,7 +2,6 @@
 .env
 .venv
 venv
-workspace
 profil.md
 **/__pycache__
 **/*.egg-info

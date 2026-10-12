@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import smtplib
 import ssl
-from datetime import datetime, timezone
+from datetime import datetime
+from typing import Any
+from zoneinfo import ZoneInfo
 from email.message import EmailMessage
 from email.utils import make_msgid
 
 from ..config import Config, SmtpConfig
-from ..storage import now_iso
+from ..repos import now_iso
 from . import Tool, ToolError, schema
-from .leads import LeadStore
 
 
 def open_smtp(smtp: SmtpConfig) -> smtplib.SMTP:
@@ -46,43 +47,44 @@ def build_message(smtp: SmtpConfig, to: str, subject: str, body: str) -> EmailMe
     return msg
 
 
-def sent_today(store: LeadStore) -> int:
-    today = datetime.now(timezone.utc).date().isoformat()
-    return sum(
-        1 for lead in store.load() for sent in lead.get("emails", []) if sent["sent_at"].startswith(today)
-    )
+def _normalize(text: str) -> str:
+    return text.replace("\r\n", "\n").strip()
 
 
-def build(config: Config, store: LeadStore) -> list[Tool]:
+def build(config: Config, repo: Any) -> list[Tool]:
     smtp = config.smtp
     assert smtp is not None
     auto = config.send_mode == "auto"
 
-    def send_email(lead_id: int, to: str, subject: str, body: str, follow_up: bool = False) -> str:
-        lead = store.get(lead_id)
-        if lead["status"] == "do_not_contact" or store.is_suppressed(to):
+    def send_email(lead_id: str, to: str, subject: str, body: str, follow_up: bool = False) -> str:
+        lead = repo.get(lead_id)
+        if lead["status"] == "do_not_contact" or repo.is_suppressed(to):
             raise ToolError("Tento kontakt si nepřeje být oslovován. E-mail neodeslán.")
-        if lead.get("emails") and not follow_up:
+        if lead.get("last_contacted") and not follow_up:
             raise ToolError(
-                f"Lead #{lead_id} už byl osloven {lead['emails'][-1]['sent_at']}. "
+                f"Lead {lead_id} už byl osloven {lead['last_contacted']}. "
                 "Další zprávu pošli jen jako follow_up=true, pokud o to uživatel stojí."
             )
         if auto:
             # Without a human in the loop, only send exactly what was saved for review.
             draft = lead.get("draft")
-            if not draft or (draft["subject"], draft["body"]) != (subject, body):
+            if not draft or (_normalize(draft["subject"]), _normalize(draft["body"])) != (
+                _normalize(subject), _normalize(body)
+            ):
                 raise ToolError(
                     "V automatickém režimu lze odeslat jen text shodný s uloženým návrhem. "
                     "Nejdřív ho ulož přes save_draft."
                 )
-        if sent_today(store) >= config.daily_email_limit:
+        today = datetime.now(ZoneInfo(config.timezone)).date().isoformat()
+        if repo.sent_count(today) >= config.daily_email_limit:
             raise ToolError(f"Dosažen denní limit {config.daily_email_limit} odeslaných e-mailů.")
 
         deliver(smtp, build_message(smtp, to, subject, body))
 
-        emails = [*lead.get("emails", []), {"to": to, "subject": subject, "body": body, "sent_at": now_iso()}]
-        store.update(lead_id, emails=emails, status="contacted")
-        return f"E-mail '{subject}' odeslán na {to}; lead #{lead_id} je ve stavu contacted."
+        sent_at = now_iso()
+        repo.add_email(lead_id, to, subject, body, sent_at)
+        repo.update(lead_id, {"status": "contacted", "last_contacted": sent_at})
+        return f"E-mail '{subject}' odeslán na {to}; lead {lead_id} je ve stavu contacted."
 
     if auto:
         approval_note = (
@@ -97,13 +99,13 @@ def build(config: Config, store: LeadStore) -> list[Tool]:
             name="send_email",
             description=(
                 f"Odešle obchodní e-mail z adresy {smtp.sender} kontaktu z databáze leadů a zapíše "
-                f"ho do historie leadu. {approval_note} Odmítne kontakty ve stavu do_not_contact, "
+                f"ho do tabulky E-maily v Airtable. {approval_note} Odmítne kontakty ve stavu do_not_contact, "
                 "již oslovené leady (bez follow_up) a vše nad denní limit "
                 f"{config.daily_email_limit} e-mailů."
             ),
             input_schema=schema(
                 {
-                    "lead_id": {"type": "integer"},
+                    "lead_id": {"type": "string", "description": "ID leadu v Airtable (rec…)."},
                     "to": {"type": "string"},
                     "subject": {"type": "string"},
                     "body": {"type": "string", "description": "Celý text e-mailu včetně podpisu."},

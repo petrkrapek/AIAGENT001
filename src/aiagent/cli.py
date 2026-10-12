@@ -13,6 +13,8 @@ import anthropic
 from . import __version__
 from .agent import Agent, AgentEvents
 from .config import EFFORT_LEVELS, SEND_MODES, Config
+from .airtable import AirtableClient, AirtableError, LEADS, setup_base
+from .repos import airtable_repos
 from .tools import build_registry
 
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
@@ -100,7 +102,7 @@ HELP = """Příkazy:
 
 def chat(agent: Agent) -> None:
     print(bold(f"AI obchodník {__version__}") + dim(f"  ·  model {agent.config.model}  ·  /help"))
-    print(dim(f"Pracovní adresář: {agent.config.workspace}"))
+    print(dim(f"Data: Airtable báze {agent.config.airtable_base_id}"))
     if agent.config.load_profile() is None:
         print(yellow(f"! Chybí profil firmy ({agent.config.profile_path.name}). "
                      "Zkopírujte profil.example.md jako profil.md a vyplňte ho."))
@@ -135,13 +137,12 @@ def chat(agent: Agent) -> None:
             for tool in agent.registry.server_tools:
                 print(f"  {tool['name']}{dim(' (server)')}")
             continue
-        if user_input == "/leads":
-            list_leads = agent.registry.get("list_leads")
-            print(list_leads.handler() if list_leads else "Databáze leadů není dostupná.")
-            continue
-        if user_input == "/tasks":
-            list_tasks = agent.registry.get("list_tasks")
-            print(list_tasks.handler() if list_tasks else "Nástroj úkolů není dostupný.")
+        if user_input in ("/leads", "/tasks"):
+            tool = agent.registry.get("list_leads" if user_input == "/leads" else "list_tasks")
+            try:
+                print(tool.handler())
+            except AirtableError as exc:
+                print(red(str(exc)))
             continue
         run_safely(agent, user_input)
 
@@ -166,6 +167,8 @@ def run_safely(agent: Agent, task: str) -> bool:
         print(red(f"Chyba API ({exc.status_code}): {exc.message}"))
     except anthropic.APIConnectionError:
         print(red("Nepodařilo se spojit s API. Zkontrolujte připojení."))
+    except AirtableError as exc:
+        print(red(str(exc)))
     except TypeError as exc:
         # The SDK raises a plain TypeError when no credentials are configured at all.
         if "authentication" not in str(exc):
@@ -190,12 +193,25 @@ def smtp_test(config: Config, test_to: str | None) -> int:
     return 0
 
 
+def airtable_setup(config: Config) -> int:
+    client = AirtableClient(config.airtable_token, config.airtable_base_id)
+    try:
+        for line in setup_base(client, config.timezone):
+            print(line)
+    except AirtableError as exc:
+        print(red(str(exc)))
+        if "403" in str(exc):
+            print(dim("Token potřebuje oprávnění schema.bases:read a schema.bases:write."))
+        return 1
+    print("Airtable je připravený.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aiagent", description="AI obchodník: hledá potenciální zákazníky a píše jim nabídky.")
     parser.add_argument("--version", action="version", version=f"aiagent {__version__}")
     parser.add_argument("--model", help="model Claude (výchozí z AIAGENT_MODEL)")
     parser.add_argument("--effort", choices=EFFORT_LEVELS, help="hloubka uvažování")
-    parser.add_argument("--workspace", help="pracovní adresář agenta")
     parser.add_argument("--show-thinking", action="store_true", help="zobrazovat shrnutí uvažování")
     parser.add_argument(
         "--yes",
@@ -208,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         help="odesílání e-mailů: off = jen návrhy, approve = se schválením, auto = bez schválení",
     )
     sub = parser.add_subparsers(dest="command")
+    sub.add_parser("airtable-setup", help="vytvořit v Airtable tabulky a pole, která agent potřebuje")
     smtp_parser = sub.add_parser("smtp-test", help="ověřit připojení k SMTP serveru")
     smtp_parser.add_argument("--to", help="poslat testovací e-mail na tuto adresu")
     run_parser = sub.add_parser("run", help="provést jeden úkol a skončit (vhodné pro cron)")
@@ -224,10 +241,6 @@ def main(argv: list[str] | None = None) -> int:
         config.model = args.model
     if args.effort:
         config.effort = args.effort
-    if args.workspace:
-        from pathlib import Path
-
-        config.workspace = Path(args.workspace).expanduser().resolve()
     if args.send_mode:
         config.send_mode = args.send_mode
     try:
@@ -239,6 +252,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "smtp-test":
         return smtp_test(config, args.to)
 
+    try:
+        config.validate_airtable()
+    except ValueError as exc:
+        print(red(str(exc)), file=sys.stderr)
+        return 2
+    if args.command == "airtable-setup":
+        return airtable_setup(config)
+
+    client = AirtableClient(config.airtable_token, config.airtable_base_id)
+    try:
+        client.list_records(LEADS, fields=["Firma"], max_records=1)
+    except AirtableError as exc:
+        print(red(str(exc)), file=sys.stderr)
+        if "404" in str(exc) or "422" in str(exc):
+            print(dim("Tabulky vytvoříte příkazem: aiagent airtable-setup"), file=sys.stderr)
+        return 2
+    repos = airtable_repos(client, config.timezone)
+
     if args.yes:
         approver = auto_approver
     elif sys.stdin.isatty():
@@ -246,20 +277,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         approver = noninteractive_approver
 
-    try:
-        registry = build_registry(config)
-        writable = os.access(config.workspace, os.W_OK)
-    except PermissionError:
-        writable = False
-    if not writable:
-        print(red(f"Do pracovního adresáře {config.workspace} nelze zapisovat. V Dockeru nastavte "
-                  "AIAGENT_UID a AIAGENT_GID podle vlastníka složky workspace (id -u, id -g)."),
-              file=sys.stderr)
-        return 2
-
     agent = Agent(
         config,
-        registry,
+        build_registry(config, repos),
+        audit=repos.audit,
         approver=approver,
         events=ConsoleEvents(),
         show_thinking=args.show_thinking,

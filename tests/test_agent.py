@@ -1,10 +1,10 @@
 """Agent loop tests against a scripted fake client (no network, no API key)."""
 
-import json
 from types import SimpleNamespace as NS
 
 from aiagent.agent import Agent, AgentEvents
-from aiagent.tools import build_registry
+from aiagent.repos import memory_repos
+from aiagent.tools import Tool, build_registry, schema
 
 
 def text(t):
@@ -48,7 +48,16 @@ class Recorder(AgentEvents):
 def make_agent(config, responses, approver=lambda n, i: False):
     client = FakeClient(responses)
     events = Recorder()
-    agent = Agent(config, build_registry(config), client=client, approver=approver, events=events)
+    repos = memory_repos()
+    registry = build_registry(config, repos)
+    performed = []
+    # A tool with side effects that needs the user's approval.
+    registry._tools["publish"] = Tool(
+        name="publish", description="test", input_schema=schema({"text": {"type": "string"}}, ["text"]),
+        handler=lambda text: performed.append(text) or "ok", needs_approval=True,
+    )
+    agent = Agent(config, registry, client=client, approver=approver, events=events, audit=repos.audit)
+    agent.repos, agent.performed = repos, performed
     return agent, client, events
 
 
@@ -80,37 +89,37 @@ def test_tool_loop_returns_results_in_one_message(config):
     results = second_call_messages[-1]["content"]
     assert [r["tool_use_id"] for r in results] == ["t1", "t2"]
     assert all(r["is_error"] is False for r in results)
-    tasks = json.loads((config.workspace / ".aiagent" / "tasks.json").read_text())
-    assert [t["title"] for t in tasks] == ["A", "B"]
+    assert [t["title"] for t in agent.repos.tasks.tasks.values()] == ["A", "B"]
 
 
 def test_denied_action_is_not_executed(config):
     agent, client, events = make_agent(
         config,
         [
-            response("tool_use", tool_use("t1", "write_file", {"path": "x.txt", "content": "x"})),
-            response("end_turn", text("Dobře, nezapisuji.")),
+            response("tool_use", tool_use("t1", "publish", {"text": "x"})),
+            response("end_turn", text("Dobře, nepublikuji.")),
         ],
     )
-    agent.run("zapiš soubor")
-    assert not (config.workspace / "x.txt").exists()
+    agent.run("publikuj")
+    assert agent.performed == []
     result = client.calls[1]["messages"][-1]["content"][0]
     assert result["is_error"] is True and "zamítl" in result["content"]
-    audit = (config.workspace / ".aiagent" / "audit.jsonl").read_text().splitlines()
-    assert json.loads(audit[0])["approved"] is False
+    assert agent.repos.audit.records[0] == {"tool": "publish", "input": {"text": "x"},
+                                            "approved": False, "error": True}
 
 
 def test_approved_action_runs(config):
     agent, _, _ = make_agent(
         config,
         [
-            response("tool_use", tool_use("t1", "write_file", {"path": "x.txt", "content": "x"})),
+            response("tool_use", tool_use("t1", "publish", {"text": "x"})),
             response("end_turn", text("Hotovo.")),
         ],
         approver=lambda n, i: True,
     )
-    agent.run("zapiš soubor")
-    assert (config.workspace / "x.txt").read_text() == "x"
+    agent.run("publikuj")
+    assert agent.performed == ["x"]
+    assert agent.repos.audit.records[0]["approved"] is True
 
 
 def test_tool_errors_are_reported_to_model(config):
@@ -119,14 +128,14 @@ def test_tool_errors_are_reported_to_model(config):
         [
             response(
                 "tool_use",
-                tool_use("t1", "read_file", {"path": "chybi.txt"}),
+                tool_use("t1", "get_lead", {"id": "recCHYBI"}),
                 tool_use("t2", "nonexistent", {}),
-                tool_use("t3", "read_file", {"wrong": 1}),
+                tool_use("t3", "get_lead", {"wrong": 1}),
             ),
             response("end_turn", text("Soubor neexistuje.")),
         ],
     )
-    agent.run("přečti soubor")
+    agent.run("ukaž lead")
     results = client.calls[1]["messages"][-1]["content"]
     assert [r["is_error"] for r in results] == [True, True, True]
 
@@ -164,3 +173,18 @@ def test_conversation_continues(config):
     agent.run("Pamatuješ si to?")
     roles = [m["role"] for m in client.calls[1]["messages"]]
     assert roles == ["user", "assistant", "user"]
+
+
+def test_audit_failure_does_not_break_agent(config):
+    agent, _, events = make_agent(
+        config,
+        [response("tool_use", tool_use("t1", "list_tasks", {})), response("end_turn", text("Hotovo."))],
+    )
+
+    class BrokenAudit:
+        def log(self, *args):
+            raise RuntimeError("Airtable spadl")
+
+    agent.audit = BrokenAudit()
+    assert agent.run("úkoly") == "Hotovo."
+    assert any("Airtable spadl" in n for n in events.notices)

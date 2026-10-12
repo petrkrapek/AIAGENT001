@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
 import anthropic
@@ -59,7 +56,8 @@ zamítne, neopakuj ji a zeptej se, co upravit.
 jsi prošel, kolik je kvalifikovaných, kolik návrhů je připraveno a kolik e-mailů odešlo.
 
 ## Prostředí
-- Pracovní adresář: {workspace} (návrhy e-mailů ukládáš do podsložky navrhy/)
+- Všechna data (leady, návrhy e-mailů, odeslané e-maily, úkoly) se ukládají do Airtable; \
+uživatel je tam vidí a může je i sám upravovat, proto před prací načti aktuální stav.
 - Časové pásmo: {timezone}
 
 ## Profil firmy a nabídky
@@ -95,7 +93,7 @@ def build_system_prompt(config: Config, sending_enabled: bool) -> str:
     else:
         sending = SENDING_APPROVE.format(limit=config.daily_email_limit)
     return SYSTEM_PROMPT.format(
-        sending=sending, workspace=config.workspace, timezone=config.timezone, profile=profile
+        sending=sending, timezone=config.timezone, profile=profile
     )
 
 
@@ -126,6 +124,7 @@ class Agent:
         approver: Approver = deny_all,
         events: AgentEvents | None = None,
         show_thinking: bool = False,
+        audit: Any = None,
     ):
         self.config = config
         self.registry = registry
@@ -135,7 +134,7 @@ class Agent:
         self.show_thinking = show_thinking
         self.system = build_system_prompt(config, sending_enabled="send_email" in registry)
         self.messages: list[dict[str, Any]] = []
-        self.audit_path = config.workspace / ".aiagent" / "audit.jsonl"
+        self.audit = audit
 
     def reset(self) -> None:
         self.messages = []
@@ -252,16 +251,9 @@ class Agent:
         return result, is_error
 
     def _audit(self, name: str, tool_input: dict[str, Any], approved: bool | None, is_error: bool) -> None:
-        record = {
-            "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "tool": name,
-            "input": tool_input,
-            "approved": approved,
-            "error": is_error,
-        }
+        if self.audit is None:
+            return
         try:
-            Path(self.audit_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(self.audit_path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
+            self.audit.log(name, tool_input, approved, is_error)
+        except Exception as exc:  # auditing must never break the agent
+            self.events.on_notice(f"Zápis do auditu selhal: {exc}")

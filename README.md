@@ -2,6 +2,8 @@
 
 Agent pro příkazovou řádku postavený na [Claude API](https://platform.claude.com/docs). Vyhledává potenciální zákazníky, ověří, že jim vaše nabídka dává smysl, najde jejich veřejný kontakt a napíše jim osobní e-mail s nabídkou spolupráce. Každý e-mail vám před odesláním ukáže ke schválení.
 
+Všechna data (leady, návrhy e-mailů, odeslané e-maily, úkoly a audit log) ukládá do vaší báze v **[Airtable](https://airtable.com)**. Lokálně neukládá nic, takže leady můžete procházet, filtrovat a upravovat přímo v Airtable a agent při další práci vychází z aktuálního stavu.
+
 ```
 vy › Najdi 10 e-shopů s vlastním skladem v Jihomoravském kraji a připrav jim nabídku.
 → list_leads {}
@@ -9,10 +11,11 @@ vy › Najdi 10 e-shopů s vlastním skladem v Jihomoravském kraji a připrav j
 → web_search {"query": "e-shop Brno vlastní sklad expedice"}
 → web_fetch {"url": "https://www.priklad-eshop.cz/kontakt"}
 → save_lead {"company": "Příklad Shop s.r.o.", "email": "obchod@priklad-eshop.cz", ...}
-→ save_draft {"id": 1, "subject": "Rychlejší expedice pro Příklad Shop", ...}
+→ save_draft {"id": "recA1b2C3d4E5f6G7", "subject": "Rychlejší expedice pro Příklad Shop", ...}
 ...
-Prošel jsem 23 firem, 10 odpovídá profilu. Návrhy e-mailů jsou ve složce navrhy/,
-u 2 firem jsem nenašel veřejný e-mail. Mám návrhy odeslat?
+Prošel jsem 23 firem, 10 odpovídá profilu. Návrhy e-mailů najdete v Airtable
+(tabulka Leady, stav „Návrh připraven“), u 2 firem jsem nenašel veřejný e-mail.
+Mám návrhy odeslat?
 ```
 
 ## Jak agent pracuje
@@ -20,8 +23,8 @@ u 2 firem jsem nenašel veřejný e-mail. Mám návrhy odeslat?
 1. **Hledání:** české firmy hledá v obchodním rejstříku ARES (podle oboru, města a názvu) a na webu (katalogy, oborové seznamy, zprávy).
 2. **Kvalifikace:** projde web firmy, porovná ji s vaším ideálním zákazníkem z profilu a najde konkrétní důvod, proč by je nabídka mohla zajímat.
 3. **Kontakt:** použije jen e-mail, který firma sama zveřejňuje, a zapíše, kde ho našel. Adresy nehádá.
-4. **Databáze leadů:** každou vhodnou firmu uloží i s odůvodněním. Hlídá duplicity (IČO, e-mail, doména), takže nikoho neosloví dvakrát.
-5. **E-mail na míru:** krátký, věcný, s odkazem na konkrétní zjištění o firmě, jednou výzvou k akci, vaším podpisem a možností odhlášení. Návrh uloží do `workspace/navrhy/`.
+4. **Databáze leadů v Airtable:** každou vhodnou firmu uloží i s odůvodněním. Hlídá duplicity (IČO, e-mail, doména), takže nikoho neosloví dvakrát.
+5. **E-mail na míru:** krátký, věcný, s odkazem na konkrétní zjištění o firmě, jednou výzvou k akci, vaším podpisem a možností odhlášení. Návrh uloží k leadu v Airtable, kde ho můžete zkontrolovat i upravit.
 6. **Odeslání:** jen na váš pokyn a každý e-mail po schválení. Platí denní limit a kontakty, které si zprávy nepřejí, agent zablokuje.
 
 ## Nástroje
@@ -30,17 +33,33 @@ u 2 firem jsem nenašel veřejný e-mail. Mám návrhy odeslat?
 |---|---|---|
 | `ares_search`, `ares_company` | vyhledání firem v ARES a detail podle IČO | ne |
 | `web_search`, `web_fetch` | vyhledávání a čtení webu (běží na serverech Anthropicu) | ne |
-| `save_lead`, `list_leads`, `get_lead`, `update_lead` | databáze leadů (`workspace/.aiagent/leads.json`) | ne |
-| `save_draft` | uložení návrhu e-mailu k leadu a do `workspace/navrhy/` | ne |
-| `export_leads` | export leadů do CSV pro Excel | ne |
-| `send_email` | odeslání e-mailu přes SMTP (jen když je odesílání zapnuté) | **ano**, v režimu `auto` ne |
-| `add_task`, `list_tasks`, `update_task` | připomínky follow-upů | ne |
+| `save_lead`, `list_leads`, `get_lead`, `update_lead` | databáze leadů (Airtable, tabulka Leady) | ne |
+| `save_draft` | uložení návrhu e-mailu k leadu (Airtable) | ne |
+| `send_email` | odeslání e-mailu přes SMTP a zápis do tabulky E-maily (jen když je odesílání zapnuté) | **ano**, v režimu `auto` ne |
+| `add_task`, `list_tasks`, `update_task` | připomínky follow-upů (Airtable, tabulka Úkoly) | ne |
 | `get_current_time` | dnešní datum | ne |
-| `list_files`, `read_file`, `write_file` | soubory v pracovním adresáři | zápis **ano** |
-| `http_request` | webhooky a REST API (např. zápis do CRM přes Make) | **ano**, kromě GET |
-| `run_command` | příkaz v shellu | **ano** |
+| `http_request` | webhooky a REST API (např. Make) | **ano**, kromě GET |
 
-Stavy leadu: `new` → `qualified` → `drafted` → `contacted` → `replied` / `interested` / `not_interested` / `do_not_contact`.
+## Airtable
+
+Agent používá ve vaší bázi čtyři tabulky. Vytvoří je sám příkazem `aiagent airtable-setup`:
+
+| Tabulka | Obsah |
+|---|---|
+| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, návrh e-mailu (předmět, text), kdy byl naposledy osloven |
+| **E-maily** | každý odeslaný e-mail: předmět, text, komu, kdy, propojený s leadem |
+| **Úkoly** | připomínky a follow-upy s termínem |
+| **Audit** | záznam každé akce agenta: nástroj, vstup, čas, schválení a výsledek |
+
+Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví.
+
+**Nastavení:**
+1. Vytvořte v Airtable prázdnou bázi (např. „AI obchodník“). Její ID najdete v URL: `airtable.com/appXXXXXXXXXXXXXX/…`.
+2. Vytvořte osobní token na <https://airtable.com/create/tokens> s oprávněními `data.records:read`, `data.records:write`, `schema.bases:read` a `schema.bases:write` a s přístupem k této bázi.
+3. Doplňte do `.env` hodnoty `AIRTABLE_TOKEN` a `AIRTABLE_BASE_ID`.
+4. Spusťte `aiagent airtable-setup` (v Dockeru `docker compose run --rm agent airtable-setup`). Příkaz vytvoří chybějící tabulky a pole. Existující data nemění, takže ho můžete spustit kdykoli znovu, třeba po aktualizaci agenta.
+
+Do tabulek můžete přidávat vlastní pole i pohledy (třeba kanban podle stavu). Jen nepřejmenovávejte pole, která agent používá.
 
 ## Spuštění v Dockeru (doporučeno)
 
@@ -49,10 +68,10 @@ Potřebujete jen [Docker](https://docs.docker.com/get-docker/) s Docker Compose.
 ```bash
 git clone https://github.com/petrkrapek/AIAGENT001.git
 cd AIAGENT001
-cp .env.example .env               # doplňte ANTHROPIC_API_KEY
+cp .env.example .env               # doplňte ANTHROPIC_API_KEY a údaje Airtable
 cp profil.example.md profil.md     # popište svou firmu a nabídku
-mkdir -p workspace                 # sem agent ukládá leady, návrhy a logy
 docker compose build
+docker compose run --rm agent airtable-setup   # vytvoří tabulky v Airtable
 ```
 
 **Chat s agentem:**
@@ -67,9 +86,7 @@ docker compose run --rm agent
 docker compose run --rm agent run "Najdi 5 stavebních firem v Brně a připrav jim nabídky."
 ```
 
-Data zůstávají na vašem počítači: leady, návrhy e-mailů (`workspace/navrhy/`) a logy ve složce `workspace/`, profil v `profil.md`. Po úpravě profilu nebo `.env` stačí agenta spustit znovu. Po změně kódu spusťte `docker compose build`.
-
-Kontejner běží pod neprivilegovaným uživatelem a příkazy agenta (`run_command`) se spouštějí jen uvnitř kontejneru. Na Linuxu musí mít kontejner právo zapisovat do složky `workspace`. Pokud vaše UID není 1000, přidejte do `.env` řádky `AIAGENT_UID=…` a `AIAGENT_GID=…` (zjistíte je příkazy `id -u` a `id -g`).
+Kontejner neukládá žádná data, všechno jde do Airtable. Z disku čte jen `.env` a `profil.md` (pouze pro čtení). Můžete ho tedy kdykoli smazat a znovu sestavit bez ztráty dat. Po úpravě profilu nebo `.env` stačí agenta spustit znovu. Po změně kódu spusťte `docker compose build`. Kontejner běží pod neprivilegovaným uživatelem.
 
 **Odesílání e-mailů z Dockeru:** doplňte do `.env` údaje SMTP (viz [Odesílání e-mailů](#odesílání-e-mailů)) a ověřte je:
 
@@ -82,7 +99,7 @@ V chatu (`docker compose run --rm agent`) se vás agent před každým e-mailem 
 **Pravidelné spouštění přes cron hostitele** (`-T` vypne terminál; v režimu `approve` proto agent jen připraví návrhy, v režimu `auto` je i odešle):
 
 ```cron
-50 7 * * 1-5  cd /cesta/k/AIAGENT001 && docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> workspace/cron.log 2>&1
+50 7 * * 1-5  cd /cesta/k/AIAGENT001 && docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> /var/log/aiagent.log 2>&1
 ```
 
 ## Instalace bez Dockeru
@@ -95,8 +112,9 @@ cd AIAGENT001
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e .
-cp .env.example .env               # doplňte ANTHROPIC_API_KEY
+cp .env.example .env               # doplňte ANTHROPIC_API_KEY a údaje Airtable
 cp profil.example.md profil.md     # popište svou firmu a nabídku
+aiagent airtable-setup             # vytvoří tabulky v Airtable
 ```
 
 API klíč vytvoříte na <https://platform.claude.com/settings/keys>.
@@ -127,11 +145,11 @@ Režim odesílání určuje `AIAGENT_SEND_MODE` v `.env` nebo přepínač `--sen
 
 | Režim | Co dělá | Kdy použít |
 |---|---|---|
-| `off` | nic neodesílá, jen ukládá návrhy do `workspace/navrhy/` | když chcete posílat ručně |
+| `off` | nic neodesílá, jen ukládá návrhy do Airtable | když chcete posílat ručně |
 | `approve` | před každým e-mailem ukáže celý text a čeká na „a“ | chat (výchozí, když je SMTP nastavené) |
 | `auto` | odesílá bez ptaní, ale jen text shodný s uloženým návrhem | běh bez terminálu: cron, `docker compose run -T` |
 
-Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail je v historii leadu. Režim `auto` zapínejte až ve chvíli, kdy jste s kvalitou návrhů spokojení.
+Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail se zapíše do tabulky E-maily v Airtable. Režim `auto` zapínejte až ve chvíli, kdy jste s kvalitou návrhů spokojení.
 
 ## Použití
 
@@ -148,9 +166,8 @@ Příklady zadání:
 - „Projdi leady ve stavu drafted a odešli je.“ (u každého se zeptá na schválení)
 - „Firma Beta odpověděla, že nemá zájem.“ (nastaví `do_not_contact`)
 - „Firma Alfa má zájem, připomeň mi zavolat jim v pondělí.“
-- „Exportuj leady do CSV.“
 
-V chatu fungují příkazy `/leads`, `/tasks`, `/tools`, `/reset`, `/help` a `/exit`.
+V chatu fungují příkazy `/leads`, `/tasks`, `/tools`, `/reset`, `/help` a `/exit`. Export do CSV nebo Excelu uděláte přímo v Airtable.
 
 **Jeden úkol a konec** (třeba ranní hledání přes cron):
 
@@ -161,21 +178,22 @@ aiagent run "Najdi 5 nových firem podle profilu a připrav jim návrhy e-mailů
 Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` proto e-maily neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Pro odesílání bez dozoru použijte `--send-mode auto` (nebo `AIAGENT_SEND_MODE=auto`). Přepínač `--yes` schvaluje úplně všechny akce. U e-mailů je bezpečnější režim `auto`, který odešle jen uložený návrh.
 
 ```cron
-50 7 * * 1-5  cd /cesta/k/AIAGENT001 && .venv/bin/aiagent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> workspace/cron.log 2>&1
+50 7 * * 1-5  cd /cesta/k/AIAGENT001 && .venv/bin/aiagent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> /var/log/aiagent.log 2>&1
 ```
 
-Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--workspace CESTA` a `--show-thinking`.
+Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-mode` a `--show-thinking`.
 
 ## Konfigurace (`.env`)
 
 | Proměnná | Výchozí | Popis |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | – | API klíč (povinný) |
+| `AIRTABLE_TOKEN` | – | osobní token Airtable (povinný) |
+| `AIRTABLE_BASE_ID` | – | ID báze Airtable, `app…` (povinné) |
 | `AIAGENT_MODEL` | `claude-opus-5-5` | model Claude |
 | `AIAGENT_EFFORT` | `high` | hloubka uvažování; `medium` je levnější a rychlejší |
 | `AIAGENT_PROFILE` | `profil.md` | profil firmy a nabídky |
 | `AIAGENT_DAILY_EMAIL_LIMIT` | `20` | maximum odeslaných e-mailů za den |
-| `AIAGENT_WORKSPACE` | `./workspace` | data agenta (leady, návrhy, úkoly, audit log) |
 | `AIAGENT_TIMEZONE` | `Europe/Prague` | časové pásmo |
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |
@@ -196,14 +214,15 @@ src/aiagent/
 ├── agent.py      smyčka agenta a systémový prompt obchodníka
 ├── cli.py        příkazová řádka, schvalování akcí, výpis průběhu
 ├── config.py     nastavení z prostředí / .env, načtení profilu
-├── storage.py    jednoduché JSON úložiště
+├── airtable.py   klient Airtable API a schéma tabulek (airtable-setup)
+├── repos.py      ukládání leadů, e-mailů, úkolů a auditu do Airtable
 └── tools/
-    ├── ares.py   leads.py   mail.py        obchodní nástroje
-    ├── web.py    tasks.py   files.py   shell.py   system.py
+    ├── ares.py   leads.py   mail.py   tasks.py   obchodní nástroje
+    ├── web.py    system.py
     └── __init__.py   registr nástrojů
 ```
 
-Agent volá Messages API s adaptivním uvažováním. Opakující se část požadavku (prompt, profil, nástroje, historie) se ukládá do cache, takže další kroky stojí méně. Kdyby model požadavek odmítl, API ho zkusí zopakovat na záložním modelu (`fallbacks: "default"`). Každé volání nástroje se zapisuje do `workspace/.aiagent/audit.jsonl`.
+Agent volá Messages API s adaptivním uvažováním. Opakující se část požadavku (prompt, profil, nástroje, historie) se ukládá do cache, takže další kroky stojí méně. Kdyby model požadavek odmítl, API ho zkusí zopakovat na záložním modelu (`fallbacks: "default"`). Každé volání nástroje se zapisuje do tabulky Audit v Airtable.
 
 ### Přidání vlastního nástroje
 
@@ -216,4 +235,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Testy nepotřebují API klíč ani síť. API, ARES i SMTP jsou v nich simulované.
+Testy nepotřebují API klíč ani síť. Claude API, Airtable, ARES i SMTP jsou v nich simulované.

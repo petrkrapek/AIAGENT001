@@ -5,6 +5,7 @@ import pytest
 from aiagent.agent import build_system_prompt
 from aiagent.cli import main
 from aiagent.config import Config, SmtpConfig
+from aiagent.repos import memory_repos
 from aiagent.tools import ToolError, build_registry
 from aiagent.tools.mail import open_smtp, smtp_check
 
@@ -15,7 +16,7 @@ SMTP_ENV = {"SMTP_HOST": "smtp.example.com", "SMTP_USER": "obchod@priklad.cz",
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
     for key in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM",
-                "SMTP_SECURITY", "AIAGENT_SEND_MODE"):
+                "SMTP_SECURITY", "AIAGENT_SEND_MODE", "AIRTABLE_TOKEN", "AIRTABLE_BASE_ID"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.chdir(tmp_path)  # no .env lookup from the repo
     return monkeypatch
@@ -50,25 +51,25 @@ def smtp_config(config, mode):
     return config
 
 
-def test_off_mode_has_no_send_tool(config):
-    assert "send_email" not in build_registry(smtp_config(config, "off"))
+def test_off_mode_has_no_send_tool(config, repos):
+    assert "send_email" not in build_registry(smtp_config(config, "off"), repos)
 
 
-def test_auto_mode_sends_only_saved_draft_without_approval(config):
-    registry = build_registry(smtp_config(config, "auto"))
+def test_auto_mode_sends_only_saved_draft_without_approval(config, repos):
+    registry = build_registry(smtp_config(config, "auto"), repos)
     tool = registry.get("send_email")
     assert not tool.requires_approval({})
     registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz",
                                       email_source="https://alfa.cz/kontakt")
     with pytest.raises(ToolError, match="návrhem"):
-        tool.handler(lead_id=1, to="info@alfa.cz", subject="Nabídka", body="Text")
-    registry.get("save_draft").handler(id=1, subject="Nabídka", body="Text")
+        tool.handler(lead_id="rec00001", to="info@alfa.cz", subject="Nabídka", body="Text")
+    registry.get("save_draft").handler(id="rec00001", subject="Nabídka", body="Text\n")
     with pytest.raises(ToolError, match="návrhem"):
-        tool.handler(lead_id=1, to="info@alfa.cz", subject="Nabídka", body="Jiný text")
+        tool.handler(lead_id="rec00001", to="info@alfa.cz", subject="Nabídka", body="Jiný text")
     with mock.patch("aiagent.tools.mail.smtplib.SMTP") as smtp_cls:
-        tool.handler(lead_id=1, to="info@alfa.cz", subject="Nabídka", body="Text")
+        tool.handler(lead_id="rec00001", to="info@alfa.cz", subject="Nabídka", body="Text")
     smtp_cls.return_value.__enter__.return_value.send_message.assert_called_once()
-    assert registry.leads.get(1)["status"] == "contacted"
+    assert repos.leads.get("rec00001")["status"] == "contacted"
 
 
 def test_system_prompt_per_mode(config):

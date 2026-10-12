@@ -52,10 +52,10 @@ def truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
 
 
 class ToolRegistry:
-    def __init__(self, tools: list[Tool], server_tools: list[dict[str, Any]] | None = None, leads=None):
+    def __init__(self, tools: list[Tool], server_tools: list[dict[str, Any]] | None = None, repos=None):
         self._tools = {tool.name: tool for tool in tools}
         self.server_tools = server_tools or []
-        self.leads = leads
+        self.repos = repos
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools
@@ -73,22 +73,18 @@ class ToolRegistry:
         return client_tools + self.server_tools
 
 
-def build_registry(config: Config) -> ToolRegistry:
-    from . import ares, files, leads, mail, shell, system, tasks, web
-
-    config.workspace.mkdir(parents=True, exist_ok=True)
-    lead_store = leads.LeadStore(config.workspace / ".aiagent" / "leads.json")
+def build_registry(config: Config, repos) -> ToolRegistry:
+    """All agent data goes through `repos` (Airtable in production)."""
+    from . import ares, leads, mail, system, tasks, web
 
     tools: list[Tool] = []
     tools += system.build(config)
     tools += ares.build(config)
-    tools += leads.build(config, lead_store)
-    tools += tasks.build(config)
-    tools += files.build(config)
+    tools += leads.build(config, repos.leads)
+    tools += tasks.build(config, repos.tasks)
     tools += web.build(config)
-    tools += shell.build(config)
     if config.sending_enabled:
-        tools += mail.build(config, lead_store)
+        tools += mail.build(config, repos.leads)
 
     server_tools = web.server_tools() if config.web_tools else []
-    return ToolRegistry(tools, server_tools, leads=lead_store)
+    return ToolRegistry(tools, server_tools, repos=repos)

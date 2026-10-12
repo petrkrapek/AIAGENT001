@@ -35,10 +35,11 @@ class SmtpConfig:
 class Config:
     model: str = "claude-opus-5-5"
     effort: str = "high"
-    workspace: Path = field(default_factory=lambda: Path("workspace").resolve())
     timezone: str = "Europe/Prague"
     web_tools: bool = True
     smtp: SmtpConfig | None = None
+    airtable_token: str = ""
+    airtable_base_id: str = ""
     send_mode: str = "off"
     profile_path: Path = field(default_factory=lambda: Path("profil.md").resolve())
     daily_email_limit: int = 20
@@ -51,6 +52,14 @@ class Config:
             raise ValueError(f"AIAGENT_SEND_MODE={self.send_mode} vyžaduje nastavené SMTP (SMTP_HOST a další).")
         if self.smtp is not None and not self.smtp.sender:
             raise ValueError("Chybí SMTP_FROM (adresa odesílatele).")
+
+    def validate_airtable(self) -> None:
+        if not self.airtable_token or not self.airtable_base_id:
+            raise ValueError(
+                "Agent ukládá data do Airtable: nastavte AIRTABLE_TOKEN a AIRTABLE_BASE_ID v .env."
+            )
+        if not self.airtable_base_id.startswith("app"):
+            raise ValueError("AIRTABLE_BASE_ID má tvar appXXXXXXXXXXXXXX (najdete ho v URL báze).")
 
     @property
     def sending_enabled(self) -> bool:
@@ -91,15 +100,14 @@ class Config:
 
         send_mode = (os.environ.get("AIAGENT_SEND_MODE") or ("approve" if smtp else "off")).lower()
 
-        workspace = Path(os.environ.get("AIAGENT_WORKSPACE") or "workspace").expanduser().resolve()
-
         return cls(
             model=os.environ.get("AIAGENT_MODEL") or "claude-opus-5-5",
             effort=effort,
-            workspace=workspace,
             timezone=os.environ.get("AIAGENT_TIMEZONE") or "Europe/Prague",
             web_tools=_flag("AIAGENT_WEB_TOOLS", True),
             smtp=smtp,
+            airtable_token=(os.environ.get("AIRTABLE_TOKEN") or "").strip(),
+            airtable_base_id=(os.environ.get("AIRTABLE_BASE_ID") or "").strip(),
             send_mode=send_mode,
             profile_path=Path(os.environ.get("AIAGENT_PROFILE") or "profil.md").expanduser().resolve(),
             daily_email_limit=int(os.environ.get("AIAGENT_DAILY_EMAIL_LIMIT") or 20),
