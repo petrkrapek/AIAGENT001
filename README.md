@@ -103,6 +103,8 @@ Do tabulek můžete přidávat vlastní pole i pohledy (třeba kanban podle stav
 
 ## Spuštění v Dockeru (doporučeno)
 
+> Podrobný návod krok za krokem pro VPS s Ubuntu (od prvního přihlášení přes Docker po cron) je v [docs/NASAZENI-VPS.md](docs/NASAZENI-VPS.md).
+
 Potřebujete jen [Docker](https://docs.docker.com/get-docker/) s Docker Compose. Python instalovat nemusíte.
 
 ```bash
@@ -139,7 +141,7 @@ V chatu (`docker compose run --rm agent`) se vás agent před každým e-mailem 
 **Pravidelné spouštění přes cron hostitele** (`-T` vypne terminál; v režimu `approve` proto agent jen připraví návrhy, v režimu `auto` odešle ty, které jste schválili v Airtable):
 
 ```cron
-50 7 * * 1-5  cd /cesta/k/AIAGENT001 && docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> /var/log/aiagent.log 2>&1
+50 7 * * 1-5  cd /cesta/k/AIAGENT001 && docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> $HOME/aiagent.log 2>&1
 ```
 
 ## Instalace bez Dockeru
@@ -219,7 +221,7 @@ Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` pr
 Návratový kód příkazu `run` je 0, když agent úkol dokončil, 1 při chybě nebo nedokončení (odmítnutí, limit délky nebo kroků) a 130 po Ctrl+C, takže ho cron i skripty umí vyhodnotit. Zadání můžete předat i souborem: `aiagent run -f zadani.md` (nebo `-f -` ze standardního vstupu).
 
 ```cron
-50 7 * * 1-5  cd /cesta/k/AIAGENT001 && .venv/bin/aiagent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> /var/log/aiagent.log 2>&1
+50 7 * * 1-5  cd /cesta/k/AIAGENT001 && .venv/bin/aiagent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> $HOME/aiagent.log 2>&1
 ```
 
 Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-mode` a `--show-thinking`.
