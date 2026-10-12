@@ -218,6 +218,30 @@ def test_ambiguous_send_keeps_the_lead_blocked(smtp_config, repos, fake_smtp):
     assert fake_smtp.send_message.call_count == 1
 
 
+def test_unbuildable_message_leaves_no_mark(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with pytest.raises(ToolError, match="jednom řádku"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="Nabídka\nspolupráce", body="y")
+    fake_smtp.send_message.assert_not_called()
+    assert repos.leads.get(rid(1))["sending_started"] is None
+    assert "odeslán" in call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="Nabídka", body="y")
+
+
+def test_ambiguous_send_counts_toward_daily_limit(smtp_config, repos, fake_smtp):
+    import smtplib
+    smtp_config.daily_email_limit = 1
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    add_lead(registry, company="Beta", ico="2", website="beta.cz", email="a@beta.cz")
+    fake_smtp.send_message.side_effect = smtplib.SMTPServerDisconnected("spojení ukončeno")
+    with pytest.raises(ToolError, match="Odeslané"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    fake_smtp.send_message.side_effect = None
+    with pytest.raises(ToolError, match="limit"):
+        call(registry, "send_email", lead_id=rid(2), to="a@beta.cz", subject="x", body="y")
+
+
 def test_failing_quit_after_accepted_message_counts_as_sent(smtp_config, repos):
     import smtplib
     registry = build_registry(smtp_config, repos)
