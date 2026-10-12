@@ -42,6 +42,13 @@ def _range(name: str, default: tuple[int, int] | None, low: int, high: int) -> t
     return start, end
 
 
+def _context_trigger() -> int:
+    value = _int("AIAGENT_CONTEXT_TRIGGER", 60_000, 0, 1_000_000)
+    if 0 < value < 20_000:
+        raise ValueError("AIAGENT_CONTEXT_TRIGGER musí být 0 (vypnuto) nebo aspoň 20000 tokenů.")
+    return value
+
+
 def _flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -89,6 +96,12 @@ class Config:
     # Sending window (start hour inclusive, end hour exclusive) on weekdays; None = any time.
     send_hours: tuple[int, int] | None = None
     max_iterations: int = 80
+    # Old tool results are cleared server-side once a request exceeds this many input tokens (0 = off).
+    context_trigger: int = 60_000
+    # Each company is researched by a separate, short-lived agent (research_company).
+    subagents: bool = True
+    subagent_model: str = ""  # empty = the main model
+    subagent_max_iterations: int = 30
 
     def validate(self) -> None:
         if self.send_mode not in SEND_MODES:
@@ -169,4 +182,7 @@ class Config:
             daily_email_limit=_int("AIAGENT_DAILY_EMAIL_LIMIT", 20, 0, 10_000),
             send_pause=_range("AIAGENT_SEND_PAUSE", (30, 90), 0, 3600) or (0, 0),
             send_hours=_range("AIAGENT_SEND_HOURS", None, 0, 24),
+            context_trigger=_context_trigger(),
+            subagents=_flag("AIAGENT_SUBAGENTS", True),
+            subagent_model=(os.environ.get("AIAGENT_SUBAGENT_MODEL") or "").strip(),
         )

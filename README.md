@@ -32,6 +32,7 @@ Mám návrhy odeslat?
 | Nástroj | K čemu | Schválení |
 |---|---|---|
 | `ares_search`, `ares_company` | vyhledání firem v ARES a detail podle IČO | ne |
+| `research_company` | prověří jednu firmu v samostatném běhu: web, kvalifikace, kontakt, uložení leadu a návrh e-mailu (viz [Delší úkoly](#delší-úkoly-a-náklady)) | ne |
 | `web_search`, `web_fetch` | vyhledávání a čtení webu (běží na serverech Anthropicu) | ne |
 | `save_lead`, `list_leads`, `get_lead`, `update_lead` | databáze leadů (Airtable, tabulka Leady) | ne |
 | `save_draft` | uložení návrhu e-mailu k leadu (Airtable) | ne |
@@ -266,6 +267,9 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIAGENT_DAILY_EMAIL_LIMIT` | `20` | maximum odeslaných e-mailů za den |
 | `AIAGENT_SEND_PAUSE` | `30-90` | náhodná pauza v sekundách mezi dvěma e-maily jednoho běhu (`0` = bez pauzy); počítá se do ní i čas, kdy e-mail schvalujete |
 | `AIAGENT_SEND_HOURS` | – | doba odesílání ve všední dny, např. `8-17` (od 8:00 do 16:59); prázdné = kdykoli |
+| `AIAGENT_SUBAGENTS` | `1` | každou firmu prověřuje samostatný krátký běh agenta (`0` = vše v jedné konverzaci) |
+| `AIAGENT_SUBAGENT_MODEL` | jako `AIAGENT_MODEL` | model pro prověřování firem (např. levnější `claude-sonnet-5-5`) |
+| `AIAGENT_CONTEXT_TRIGGER` | `60000` | od kolika tokenů v požadavku se ze starší historie mažou výsledky nástrojů (stránky webů, výsledky hledání); `0` = vypnuto |
 | `AIAGENT_TIMEZONE` | `Europe/Prague` | časové pásmo |
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |
@@ -283,11 +287,22 @@ Tohle není právní rada. Než začnete e-maily odesílat, ověřte si pravidla
 - **Jmenné e-maily** (jan.novak@firma.cz) jsou osobní údaje podle GDPR. Potřebujete právní titul (typicky oprávněný zájem) a adresáta musíte informovat.
 - Agent proto píše **jednotlivé, adresné** zprávy, používá jen veřejně zveřejněné kontakty a zapisuje jejich zdroj. Každý e-mail končí možností odhlášení a odhlášené kontakty trvale blokuje (`do_not_contact`).
 
+## Delší úkoly a náklady
+
+U zadání typu „najdi 15 firem a připrav jim nabídky“ by agent v jedné konverzaci četl desítky webů a s každým dalším krokem by posílal modelu celou dosavadní historii znovu. Proto práci dělí:
+
+- **Hlavní agent** jen hledá kandidáty (ARES, vyhledávání), hlídá duplicity a na konci shrnuje.
+- **Prověrka firmy** (`research_company`): každou firmu prověří samostatný krátký běh agenta s čistou historií. Projde web, ověří, že firma odpovídá profilu, dohledá veřejný e-mail, uloží lead a připraví návrh e-mailu. Hlavnímu agentovi vrátí jen pár řádků s výsledkem a jeho historie se pak zahodí. Takový běh má jen nástroje pro web, ARES, uložení leadu a návrhu: nemůže odesílat e-maily, volat webhooky ani měnit stav existujících leadů. Proto je i odolnější vůči podstrčeným pokynům na cizích webech.
+- **Čištění kontextu:** když historie i tak naroste nad `AIAGENT_CONTEXT_TRIGGER` tokenů (výchozí 60 000), API z ní samo odstraní starší výsledky nástrojů a poslední čtyři nechá.
+
+V terminálu poznáte kroky prověrky podle názvu firmy v hranatých závorkách, třeba `→ [Alfa s.r.o.] web_fetch …`. Pro prověřování můžete nastavit levnější model (`AIAGENT_SUBAGENT_MODEL=claude-sonnet-5-5`); hlavní agent zůstane na `AIAGENT_MODEL`. Původní chování (vše v jedné konverzaci) vrátí `AIAGENT_SUBAGENTS=0`.
+
 ## Jak to funguje uvnitř
 
 ```
 src/aiagent/
 ├── agent.py      smyčka agenta a systémový prompt obchodníka
+├── research.py   research_company: prověrka jedné firmy v samostatném běhu agenta
 ├── cli.py        příkazová řádka, schvalování akcí, výpis průběhu
 ├── config.py     nastavení z prostředí / .env
 ├── airtable.py   klient Airtable API a schéma tabulek (airtable-setup)
@@ -298,7 +313,7 @@ src/aiagent/
     └── __init__.py   registr nástrojů
 ```
 
-Agent volá Messages API se streamováním (dlouhé kroky tak nenarazí na časový limit) a s adaptivním uvažováním. Mezi voláním nástrojů vypisuje krátké průběžné poznámky. Opakující se část požadavku (prompt, profil, nástroje, historie) se ukládá do cache, takže další kroky stojí méně. Kdyby model požadavek odmítl, API ho zkusí zopakovat na záložním modelu (`fallbacks: "default"`). Každé volání nástroje se zapisuje do tabulky Audit v Airtable.
+Agent volá Messages API se streamováním (dlouhé kroky tak nenarazí na časový limit) a s adaptivním uvažováním. Mezi voláním nástrojů vypisuje krátké průběžné poznámky. Opakující se část požadavku (prompt, profil, nástroje, historie) se ukládá do cache, takže další kroky stojí méně. Když historie naroste nad `AIAGENT_CONTEXT_TRIGGER` tokenů, API z ní samo odstraní starší výsledky nástrojů (poslední čtyři nechá). Agent tak nečte stále dokola stránky, které už zpracoval, a delší úkoly nezdražují s každým krokem. Kdyby model požadavek odmítl, API ho zkusí zopakovat na záložním modelu (`fallbacks: "default"`). Každé volání nástroje se zapisuje do tabulky Audit v Airtable.
 
 ### Přidání vlastního nástroje
 

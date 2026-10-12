@@ -75,7 +75,8 @@ def test_simple_answer(config):
     assert call["model"] == "claude-opus-5-5"
     assert call["fallbacks"] == "default"
     assert call["thinking"] == {"type": "adaptive", "display": "updates"}
-    assert call["betas"] == ["thinking-display-updates-2026-08-18", "server-side-fallback-2026-07-01"]
+    assert call["betas"] == ["thinking-display-updates-2026-08-18", "server-side-fallback-2026-07-01",
+                             "context-management-2025-06-27"]
     assert call["max_tokens"] == 64_000
     assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert call["output_config"] == {"effort": config.effort}
@@ -215,8 +216,32 @@ def test_model_specific_features(config):
     agent, client, _ = make_agent(config, [response("end_turn", text("Ahoj"))])
     agent.run("Ahoj")
     call = client.calls[0]
-    assert "fallbacks" not in call and "betas" not in call
+    assert "fallbacks" not in call and call["betas"] == ["context-management-2025-06-27"]
     assert call["thinking"] == {"type": "adaptive"}
+
+
+def test_old_tool_results_are_cleared_server_side(config):
+    agent, client, _ = make_agent(config, [response("end_turn", text("Ahoj"))])
+    agent.run("Ahoj")
+    edit = client.calls[0]["context_management"]["edits"][0]
+    assert edit == {"type": "clear_tool_uses_20250919", "trigger": {"type": "input_tokens", "value": 60_000},
+                    "keep": {"type": "tool_uses", "value": 4},
+                    "clear_at_least": {"type": "input_tokens", "value": 20_000}}
+    config.context_trigger = 0
+    agent, client, _ = make_agent(config, [response("end_turn", text("Ahoj"))])
+    agent.run("Ahoj")
+    assert "context_management" not in client.calls[0]
+    assert "context-management-2025-06-27" not in client.calls[0]["betas"]
+
+
+def test_context_trigger_from_env(monkeypatch):
+    from aiagent.config import Config
+    assert Config.from_env().context_trigger == 60_000
+    monkeypatch.setenv("AIAGENT_CONTEXT_TRIGGER", "0")
+    assert Config.from_env().context_trigger == 0
+    monkeypatch.setenv("AIAGENT_CONTEXT_TRIGGER", "5000")
+    with pytest.raises(ValueError, match="AIAGENT_CONTEXT_TRIGGER"):
+        Config.from_env()
 
 
 def test_iteration_limit(config):

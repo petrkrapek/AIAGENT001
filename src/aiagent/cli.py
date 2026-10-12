@@ -17,6 +17,7 @@ from .agent import Agent, AgentEvents, format_services
 from .airtable import LEADS, AirtableClient, AirtableError, setup_base
 from .config import EFFORT_LEVELS, SEND_MODES, Config
 from .repos import airtable_repos, redact, sync_blocklist
+from .research import enable_research
 from .tools import ToolError, build_registry
 
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_INTERRUPTED = 0, 1, 2, 130
@@ -374,6 +375,8 @@ def _main(argv: list[str] | None) -> int:
         events=ConsoleEvents(),
         show_thinking=args.show_thinking,
     )
+    if config.subagents:
+        enable_research(agent)
 
     if task is not None:
         return run_safely(agent, task.strip())
