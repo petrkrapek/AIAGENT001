@@ -65,13 +65,19 @@ jsi prošel, kolik je kvalifikovaných, kolik návrhů je připraveno a kolik e-
 ## Profil firmy a nabídky
 {profile}"""
 
-SENDING_ENABLED = (
+SENDING_APPROVE = (
     "e-mail odešli přes send_email jen tehdy, když o to uživatel požádá nebo to zadání "
     "výslovně obsahuje. Každé odeslání uživatel schvaluje. Denní limit je {limit} e-mailů."
 )
+SENDING_AUTO = (
+    "odesílání běží automaticky bez schvalování. E-mail odešli přes send_email jen tehdy, "
+    "když to zadání výslovně požaduje, a vždy nejdřív ulož návrh přes save_draft: odeslat "
+    "lze jen text shodný s uloženým návrhem. Buď o to pečlivější, protože e-mail před "
+    "odesláním nikdo nekontroluje. Denní limit je {limit} e-mailů."
+)
 SENDING_DISABLED = (
-    "odesílání e-mailů není nastavené (chybí SMTP), návrhy pouze ukládej. Uživatel je "
-    "odešle sám nebo si odesílání zapne."
+    "odesílání e-mailů je vypnuté, návrhy pouze ukládej. Uživatel je odešle sám nebo si "
+    "odesílání zapne."
 )
 PROFILE_MISSING = (
     "Profil zatím není vyplněný (soubor {path}). Než začneš psát e-maily, zeptej se "
@@ -82,9 +88,12 @@ PROFILE_MISSING = (
 
 def build_system_prompt(config: Config, sending_enabled: bool) -> str:
     profile = config.load_profile() or PROFILE_MISSING.format(path=config.profile_path)
-    sending = (
-        SENDING_ENABLED.format(limit=config.daily_email_limit) if sending_enabled else SENDING_DISABLED
-    )
+    if not sending_enabled:
+        sending = SENDING_DISABLED
+    elif config.send_mode == "auto":
+        sending = SENDING_AUTO.format(limit=config.daily_email_limit)
+    else:
+        sending = SENDING_APPROVE.format(limit=config.daily_email_limit)
     return SYSTEM_PROMPT.format(
         sending=sending, workspace=config.workspace, timezone=config.timezone, profile=profile
     )

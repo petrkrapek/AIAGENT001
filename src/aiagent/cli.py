@@ -11,8 +11,8 @@ from typing import Any
 import anthropic
 
 from . import __version__
-from .agent import Agent, AgentEvents, deny_all
-from .config import EFFORT_LEVELS, Config
+from .agent import Agent, AgentEvents
+from .config import EFFORT_LEVELS, SEND_MODES, Config
 from .tools import build_registry
 
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
@@ -77,6 +77,13 @@ def interactive_approver(name: str, tool_input: dict[str, Any]) -> bool:
     return answer in ("a", "ano", "y", "yes")
 
 
+def noninteractive_approver(name: str, tool_input: dict[str, Any]) -> bool:
+    # Nobody to ask (cron, docker compose run -T): refuse actions that need approval.
+    hint = " Pro odesílání bez terminálu nastavte AIAGENT_SEND_MODE=auto." if name == "send_email" else ""
+    print(yellow(f"! Zamítnuto (běh bez terminálu): {name}.{hint}"))
+    return False
+
+
 def auto_approver(name: str, tool_input: dict[str, Any]) -> bool:
     print(yellow(f"! Automaticky schváleno: {name}"))
     return True
@@ -97,8 +104,13 @@ def chat(agent: Agent) -> None:
     if agent.config.load_profile() is None:
         print(yellow(f"! Chybí profil firmy ({agent.config.profile_path.name}). "
                      "Zkopírujte profil.example.md jako profil.md a vyplňte ho."))
-    if "send_email" not in agent.registry:
-        print(dim("Odesílání e-mailů není nastavené (SMTP): agent připraví jen návrhy."))
+    modes = {
+        "off": "Odesílání e-mailů je vypnuté: agent připraví jen návrhy.",
+        "approve": "Odesílání e-mailů zapnuto, každý e-mail schvalujete.",
+        "auto": "Odesílání e-mailů zapnuto AUTOMATICKY bez schvalování (odesílá jen uložené návrhy).",
+    }
+    mode = agent.config.send_mode if "send_email" in agent.registry else "off"
+    print(yellow(modes[mode]) if mode == "auto" else dim(modes[mode]))
     while True:
         try:
             user_input = input(bold("\nvy › ")).strip()
@@ -162,6 +174,22 @@ def run_safely(agent: Agent, task: str) -> bool:
     return False
 
 
+def smtp_test(config: Config, test_to: str | None) -> int:
+    from .tools import ToolError
+    from .tools.mail import smtp_check
+
+    if config.smtp is None:
+        print(red("SMTP není nastavené. Doplňte SMTP_HOST, SMTP_USER, SMTP_PASSWORD a SMTP_FROM do .env."))
+        return 2
+    try:
+        print(smtp_check(config.smtp, test_to))
+    except ToolError as exc:
+        print(red(str(exc)))
+        return 1
+    print(dim(f"Režim odesílání: {config.send_mode}"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aiagent", description="AI obchodník: hledá potenciální zákazníky a píše jim nabídky.")
     parser.add_argument("--version", action="version", version=f"aiagent {__version__}")
@@ -174,7 +202,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="schvalovat všechny akce automaticky (opatrně!)",
     )
+    parser.add_argument(
+        "--send-mode",
+        choices=SEND_MODES,
+        help="odesílání e-mailů: off = jen návrhy, approve = se schválením, auto = bez schválení",
+    )
     sub = parser.add_subparsers(dest="command")
+    smtp_parser = sub.add_parser("smtp-test", help="ověřit připojení k SMTP serveru")
+    smtp_parser.add_argument("--to", help="poslat testovací e-mail na tuto adresu")
     run_parser = sub.add_parser("run", help="provést jeden úkol a skončit (vhodné pro cron)")
     run_parser.add_argument("task", nargs="?", help="zadání úkolu")
     run_parser.add_argument("-f", "--file", help="načíst zadání ze souboru ('-' = stdin)")
@@ -193,13 +228,23 @@ def main(argv: list[str] | None = None) -> int:
         from pathlib import Path
 
         config.workspace = Path(args.workspace).expanduser().resolve()
+    if args.send_mode:
+        config.send_mode = args.send_mode
+    try:
+        config.validate()
+    except ValueError as exc:
+        print(red(str(exc)), file=sys.stderr)
+        return 2
+
+    if args.command == "smtp-test":
+        return smtp_test(config, args.to)
 
     if args.yes:
         approver = auto_approver
     elif sys.stdin.isatty():
         approver = interactive_approver
     else:
-        approver = deny_all  # nobody to ask: refuse actions that need approval
+        approver = noninteractive_approver
 
     try:
         registry = build_registry(config)

@@ -87,7 +87,7 @@ def build_registry(config: Config) -> ToolRegistry:
     tools += files.build(config)
     tools += web.build(config)
     tools += shell.build(config)
-    if config.smtp is not None:
+    if config.sending_enabled:
         tools += mail.build(config, lead_store)
 
     server_tools = web.server_tools() if config.web_tools else []

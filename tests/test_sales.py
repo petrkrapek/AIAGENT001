@@ -16,6 +16,7 @@ def call(registry, tool, **kwargs):
 @pytest.fixture
 def smtp_config(config):
     config.smtp = SmtpConfig(host="smtp.example.com", sender="obchod@priklad.cz")
+    config.send_mode = "approve"
     return config
 
 
@@ -185,7 +186,7 @@ def test_system_prompt_includes_profile(config, tmp_path):
     config.profile_path.write_text("Prodáváme {sklady} pro e-shopy.", encoding="utf-8")
     prompt = build_system_prompt(config, sending_enabled=False)
     assert "Prodáváme {sklady} pro e-shopy." in prompt
-    assert "odesílání e-mailů není nastavené" in prompt
+    assert "odesílání e-mailů je vypnuté" in prompt
 
 
 def test_system_prompt_without_profile(config, tmp_path):

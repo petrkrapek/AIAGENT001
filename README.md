@@ -33,7 +33,7 @@ u 2 firem jsem nenašel veřejný e-mail. Mám návrhy odeslat?
 | `save_lead`, `list_leads`, `get_lead`, `update_lead` | databáze leadů (`workspace/.aiagent/leads.json`) | ne |
 | `save_draft` | uložení návrhu e-mailu k leadu a do `workspace/navrhy/` | ne |
 | `export_leads` | export leadů do CSV pro Excel | ne |
-| `send_email` | odeslání e-mailu přes SMTP (jen když je nastavený `SMTP_HOST`) | **ano** |
+| `send_email` | odeslání e-mailu přes SMTP (jen když je odesílání zapnuté) | **ano**, v režimu `auto` ne |
 | `add_task`, `list_tasks`, `update_task` | připomínky follow-upů | ne |
 | `get_current_time` | dnešní datum | ne |
 | `list_files`, `read_file`, `write_file` | soubory v pracovním adresáři | zápis **ano** |
@@ -71,7 +71,15 @@ Data zůstávají na vašem počítači: leady, návrhy e-mailů (`workspace/nav
 
 Kontejner běží pod neprivilegovaným uživatelem a příkazy agenta (`run_command`) se spouštějí jen uvnitř kontejneru. Na Linuxu musí mít kontejner právo zapisovat do složky `workspace`. Pokud vaše UID není 1000, přidejte do `.env` řádky `AIAGENT_UID=…` a `AIAGENT_GID=…` (zjistíte je příkazy `id -u` a `id -g`).
 
-**Pravidelné spouštění přes cron hostitele** (`-T` vypne terminál, takže agent e-maily neodesílá a jen připraví návrhy):
+**Odesílání e-mailů z Dockeru:** doplňte do `.env` údaje SMTP (viz [Odesílání e-mailů](#odesílání-e-mailů)) a ověřte je:
+
+```bash
+docker compose run --rm agent smtp-test --to vas@email.cz
+```
+
+V chatu (`docker compose run --rm agent`) se vás agent před každým e-mailem zeptá na schválení stejně jako bez Dockeru.
+
+**Pravidelné spouštění přes cron hostitele** (`-T` vypne terminál; v režimu `approve` proto agent jen připraví návrhy, v režimu `auto` je i odešle):
 
 ```cron
 50 7 * * 1-5  cd /cesta/k/AIAGENT001 && docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> workspace/cron.log 2>&1
@@ -99,7 +107,31 @@ Tohle je nejdůležitější krok. Podle profilu agent vybírá firmy a píše e
 
 ### Odesílání e-mailů
 
-Bez nastaveného SMTP agent jen ukládá návrhy a odeslání necháte na sobě. Pro odesílání doplňte do `.env` údaje SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`). Hodí se samostatná obchodní schránka. Limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20) chrání pověst vaší domény.
+Odesílání funguje stejně v Dockeru i bez něj. Stačí do `.env` doplnit SMTP údaje vaší schránky. Hodí se samostatná obchodní schránka.
+
+```ini
+# Seznam: smtp.seznam.cz, Gmail: smtp.gmail.com, Microsoft 365: smtp.office365.com
+SMTP_HOST=smtp.seznam.cz
+# 465 = SSL, 587 = STARTTLS
+SMTP_PORT=465
+SMTP_USER=obchod@vasefirma.cz
+# u Gmailu a Microsoftu heslo aplikace, ne běžné heslo
+SMTP_PASSWORD=...
+SMTP_FROM=obchod@vasefirma.cz
+AIAGENT_SEND_MODE=approve
+```
+
+Nastavení ověříte příkazem `aiagent smtp-test` (v Dockeru `docker compose run --rm agent smtp-test`). S `--to vas@email.cz` zároveň pošle testovací e-mail.
+
+Režim odesílání určuje `AIAGENT_SEND_MODE` v `.env` nebo přepínač `--send-mode`:
+
+| Režim | Co dělá | Kdy použít |
+|---|---|---|
+| `off` | nic neodesílá, jen ukládá návrhy do `workspace/navrhy/` | když chcete posílat ručně |
+| `approve` | před každým e-mailem ukáže celý text a čeká na „a“ | chat (výchozí, když je SMTP nastavené) |
+| `auto` | odesílá bez ptaní, ale jen text shodný s uloženým návrhem | běh bez terminálu: cron, `docker compose run -T` |
+
+Ve všech režimech platí denní limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20, chrání pověst vaší domény), blokace kontaktů `do_not_contact` a zákaz opakovaného oslovení. Každý odeslaný e-mail je v historii leadu. Režim `auto` zapínejte až ve chvíli, kdy jste s kvalitou návrhů spokojení.
 
 ## Použití
 
@@ -126,7 +158,7 @@ V chatu fungují příkazy `/leads`, `/tasks`, `/tools`, `/reset`, `/help` a `/e
 aiagent run "Najdi 5 nových firem podle profilu a připrav jim návrhy e-mailů."
 ```
 
-Když agent běží bez terminálu, nemá se koho zeptat. E-maily proto neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Přepínač `--yes` schvaluje všechno automaticky. U odesílání e-mailů ho nedoporučuji.
+Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` proto e-maily neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Pro odesílání bez dozoru použijte `--send-mode auto` (nebo `AIAGENT_SEND_MODE=auto`). Přepínač `--yes` schvaluje úplně všechny akce. U e-mailů je bezpečnější režim `auto`, který odešle jen uložený návrh.
 
 ```cron
 50 7 * * 1-5  cd /cesta/k/AIAGENT001 && .venv/bin/aiagent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> workspace/cron.log 2>&1
@@ -146,7 +178,8 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--worksp
 | `AIAGENT_WORKSPACE` | `./workspace` | data agenta (leady, návrhy, úkoly, audit log) |
 | `AIAGENT_TIMEZONE` | `Europe/Prague` | časové pásmo |
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
-| `SMTP_*` | – | odesílání e-mailů |
+| `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | – | SMTP server pro odesílání |
 
 ## Právní minimum (ČR/EU)
 

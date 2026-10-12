@@ -22,6 +22,7 @@ def test_registry_contents(config):
 def test_web_and_email_tools_optional(config):
     config.web_tools = True
     config.smtp = SmtpConfig(host="smtp.example.com", sender="me@example.com")
+    config.send_mode = "approve"
     registry = build_registry(config)
     assert "send_email" in registry
     assert [t["name"] for t in registry.server_tools] == ["web_search", "web_fetch"]
