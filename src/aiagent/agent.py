@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import Any, cast
 
 import anthropic
+import httpx2
 from anthropic.types.beta import (
     BetaMessageParam,
     BetaOutputConfigParam,
@@ -21,6 +23,10 @@ log = logging.getLogger("aiagent")
 
 # Streaming keeps long agentic turns clear of HTTP timeouts, so the output cap can be generous.
 MAX_TOKENS = 64_000
+# A model call that fails mid-stream (dropped connection, overload) is retried this many times; the SDK
+# retries only errors that arrive before the stream starts. Safe: the history doesn't change meanwhile.
+STREAM_RETRIES = 2
+RETRY_DELAY = 5.0  # seconds, doubled with each attempt
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 THINKING_UPDATES_BETA = "thinking-display-updates-2026-08-18"
 CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
@@ -238,6 +244,17 @@ def deny_all(name: str, tool_input: dict[str, Any]) -> bool:
     return False
 
 
+def retryable(exc: Exception) -> bool:
+    """A transient failure in the middle of a stream; the SDK already retried failures before it started."""
+    if isinstance(exc, httpx2.TransportError):
+        return True  # the connection dropped or timed out; before the stream, SDK wraps these errors
+    if isinstance(exc, anthropic.APIStatusError) and exc.status_code == 200:
+        # An error event in the middle of a stream arrives with the stream's HTTP status.
+        error = exc.body.get("error") if isinstance(exc.body, dict) else None
+        return isinstance(error, dict) and error.get("type") in ("overloaded_error", "api_error")
+    return False
+
+
 class Agent:
     def __init__(
         self,
@@ -309,7 +326,14 @@ class Agent:
         self.outcome = "done"
 
         for _ in range(self.config.max_iterations):
-            response = self._call_model()
+            try:
+                response = self._call_model()
+            except BaseException:
+                if stop_reason == "pause_turn":
+                    self._drop_paused_turn()
+                raise
+            if stop_reason == "pause_turn" and response.stop_reason == "refusal":
+                self._drop_paused_turn()
             stop_reason = response.stop_reason
 
             if stop_reason == "refusal":
@@ -343,12 +367,17 @@ class Agent:
 
         self.outcome = "step_limit"
         if stop_reason == "pause_turn":
-            # A paused server-tool turn can't be followed by a new user message; drop it.
-            self.messages.pop()
+            self._drop_paused_turn()
         self.events.on_notice(
             f"Agent dosáhl limitu {self.config.max_iterations} kroků a zastavil se."
         )
         return final_text
+
+    def _drop_paused_turn(self) -> None:
+        """A paused server-tool turn can't be followed by a new user message: the API rejects every
+        later request. Drop it when the turn ends without resuming it (step limit, error, refusal)."""
+        if self.messages and self.messages[-1]["role"] == "assistant":
+            self.messages.pop()
 
     def _handle_refusal(self, response: Any, start: int) -> None:
         details = getattr(response, "stop_details", None)
@@ -383,7 +412,7 @@ class Agent:
             extra["context_management"] = self._context_management()
         if betas:
             extra["betas"] = betas
-        with self.client.beta.messages.stream(
+        request: dict[str, Any] = dict(
             model=model,
             max_tokens=MAX_TOKENS,
             # Explicit breakpoint on the static system prompt + automatic caching of the history.
@@ -395,8 +424,19 @@ class Agent:
             output_config=cast(BetaOutputConfigParam, {"effort": self.config.effort}),
             cache_control={"type": "ephemeral"},
             **extra,
-        ) as stream:
-            response = stream.get_final_message()
+        )
+        for attempt in range(STREAM_RETRIES + 1):
+            try:
+                with self.client.beta.messages.stream(**request) as stream:
+                    response = stream.get_final_message()
+                break
+            except Exception as exc:
+                if attempt == STREAM_RETRIES or not retryable(exc):
+                    raise
+                delay = RETRY_DELAY * 2 ** attempt
+                log.warning("model call failed, retrying in %.0f s: %r", delay, exc)
+                self.events.on_notice(f"Spojení s API selhalo ({type(exc).__name__}), zkouším znovu za {delay:.0f} s.")
+                time.sleep(delay)
         usage = response.usage
         log.info(
             "model=%s stop=%s input=%s output=%s cache_read=%s cache_write=%s request_id=%s",

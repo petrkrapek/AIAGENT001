@@ -11,6 +11,7 @@ import sys
 from typing import Any
 
 import anthropic
+import httpx2
 
 from . import __version__
 from .agent import Agent, AgentEvents, Approver, format_services
@@ -223,8 +224,9 @@ def run_safely(agent: Agent, task: str) -> int:
         err(f"Chyba API ({exc.status_code}): {exc.message} (request id: {exc.request_id})")
     except anthropic.APITimeoutError:
         err("API neodpovědělo včas. Zkuste to znovu, případně snižte AIAGENT_EFFORT.")
-    except anthropic.APIConnectionError:
-        err("Nepodařilo se spojit s API. Zkontrolujte připojení.")
+    except (anthropic.APIConnectionError, httpx2.TransportError):
+        # httpx2: the connection dropped in the middle of a streamed response (after the agent's retries).
+        err("Spojení s API selhalo. Zkontrolujte připojení a zkuste to znovu.")
     except AirtableError as exc:
         err(str(exc))
     except TypeError as exc:

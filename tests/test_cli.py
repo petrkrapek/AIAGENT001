@@ -74,6 +74,16 @@ def test_api_errors_go_to_stderr_with_request_id(capsys):
     assert "req_123" in out.err and out.out == ""
 
 
+def test_dropped_connection_ends_the_task_not_the_program(capsys):
+    import httpx2
+
+    def fail(task):
+        raise httpx2.RemoteProtocolError("peer closed connection without sending complete message body")
+
+    assert cli.run_safely(NS(run=fail), "x") == cli.EXIT_ERROR
+    assert "Spojení s API selhalo" in capsys.readouterr().err
+
+
 def test_stream_accepts_every_parameter_the_agent_sends():
     """Guards against SDK changes: the FakeClient in other tests would hide them."""
     params = inspect.signature(anthropic.Anthropic(api_key="x").beta.messages.stream).parameters
