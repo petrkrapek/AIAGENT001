@@ -60,8 +60,11 @@ jsi prošel, kolik je kvalifikovaných, kolik návrhů je připraveno a kolik e-
 uživatel je tam vidí a může je i sám upravovat, proto před prací načti aktuální stav.
 - Časové pásmo: {timezone}
 
-## Profil firmy a nabídky
-{profile}"""
+## Profil firmy
+{profile}
+
+## Nabízené služby (z Airtable, tabulka Služby)
+{services}"""
 
 SENDING_APPROVE = (
     "e-mail odešli přes send_email jen tehdy, když o to uživatel požádá nebo to zadání "
@@ -79,12 +82,49 @@ SENDING_DISABLED = (
 )
 PROFILE_MISSING = (
     "Profil zatím není vyplněný (soubor {path}). Než začneš psát e-maily, zeptej se "
-    "uživatele, co firma nabízí, komu, čím se liší, na jaké reference se lze odvolat a "
-    "jaký má být podpis. Vyhledávat firmy můžeš i bez profilu, pokud zadání obor určuje."
+    "uživatele, kdo firma je, čím se liší, na jaké reference se lze odvolat a jaký má být "
+    "podpis. Vyhledávat firmy můžeš i bez profilu, pokud zadání obor určuje."
+)
+SERVICES_INTRO = (
+    "Nabízej jen tyto služby a čerpej z jejich popisu, přínosů a referencí; nic si nepřidávej. "
+    "Pro každou firmu vyber službu, která jí nejvíc dává smysl, a její ID uveď jako service_id "
+    "u leadu a návrhu e-mailu. Pokyny pro agenta u služby ber jako závazné."
+)
+SERVICES_MISSING = (
+    "V tabulce Služby zatím není žádná aktivní služba. Než začneš psát e-maily, požádej "
+    "uživatele, aby nabízené služby popsal v Airtable (tabulka Služby, stav Aktivní)."
+)
+MAX_SERVICES_CHARS = 40_000
+
+SERVICE_LABELS = (
+    ("description", "Popis"),
+    ("target", "Pro koho"),
+    ("benefits", "Přínos pro zákazníka"),
+    ("price", "Cena"),
+    ("references", "Reference"),
+    ("url", "Odkaz"),
+    ("instructions", "Pokyny pro agenta"),
 )
 
 
-def build_system_prompt(config: Config, sending_enabled: bool) -> str:
+def format_services(services: list[dict[str, Any]]) -> str:
+    if not services:
+        return SERVICES_MISSING
+    blocks = [SERVICES_INTRO]
+    for service in services:
+        lines = [f"### {service['name']} (service_id: {service['id']})"]
+        for key, label in SERVICE_LABELS:
+            if service.get(key):
+                lines.append(f"- {label}: {str(service[key]).strip()}")
+        blocks.append("\n".join(lines))
+    text = "\n\n".join(blocks)
+    if len(text) > MAX_SERVICES_CHARS:
+        text = text[:MAX_SERVICES_CHARS] + "\n[... popis služeb zkrácen]"
+    return text
+
+
+def build_system_prompt(config: Config, sending_enabled: bool,
+                        services: list[dict[str, Any]] | None = None) -> str:
     profile = config.load_profile() or PROFILE_MISSING.format(path=config.profile_path)
     if not sending_enabled:
         sending = SENDING_DISABLED
@@ -93,7 +133,8 @@ def build_system_prompt(config: Config, sending_enabled: bool) -> str:
     else:
         sending = SENDING_APPROVE.format(limit=config.daily_email_limit)
     return SYSTEM_PROMPT.format(
-        sending=sending, timezone=config.timezone, profile=profile
+        sending=sending, timezone=config.timezone, profile=profile,
+        services=format_services(services or []),
     )
 
 
@@ -125,6 +166,7 @@ class Agent:
         events: AgentEvents | None = None,
         show_thinking: bool = False,
         audit: Any = None,
+        load_services: Callable[[], list[dict[str, Any]]] | None = None,
     ):
         self.config = config
         self.registry = registry
@@ -132,12 +174,27 @@ class Agent:
         self.approver = approver
         self.events = events or AgentEvents()
         self.show_thinking = show_thinking
-        self.system = build_system_prompt(config, sending_enabled="send_email" in registry)
+        self.load_services = load_services
+        self.services: list[dict[str, Any]] = []
+        self.system = ""
+        self._refresh_system_prompt()
         self.messages: list[dict[str, Any]] = []
         self.audit = audit
 
     def reset(self) -> None:
+        """Start a new conversation; also reloads the profile and services."""
         self.messages = []
+        self._refresh_system_prompt()
+
+    def _refresh_system_prompt(self) -> None:
+        if self.load_services is not None:
+            try:
+                self.services = self.load_services()
+            except Exception as exc:
+                self.events.on_notice(f"Nepodařilo se načíst služby z Airtable: {exc}")
+        self.system = build_system_prompt(
+            self.config, sending_enabled="send_email" in self.registry, services=self.services
+        )
 
     def run(self, user_input: str) -> str:
         """Process one user message; returns the final text of the agent's reply."""

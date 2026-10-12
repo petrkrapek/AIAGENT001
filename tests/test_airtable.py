@@ -150,21 +150,55 @@ def test_setup_creates_missing_tables_and_fields(http, client):
     existing = {"tables": [{"id": "tblTasks", "name": "Úkoly", "fields": [{"name": "Název"}, {"name": "Stav"}]}]}
     fake = http(
         (200, existing),
+        (200, {"id": "tblServices"}),         # create Služby
         (200, {"id": "tblLeads"}),            # create Leady
         (200, {"id": "tblEmails"}),           # create E-maily
         (200, {}), (200, {}), (200, {}),      # 3 missing fields in Úkoly
         (200, {"id": "tblAudit"}),            # create Audit
     )
     log = at.setup_base(client, "Europe/Prague")
-    assert log[0].startswith("Vytvořena tabulka Leady")
-    emails_req = fake.requests[2]
-    link = next(f for f in emails_req["body"]["fields"] if f["name"] == "Lead")
-    assert link["options"] == {"linkedTableId": "tblLeads"}
-    added = [r["body"]["name"] for r in fake.requests[3:6]]
+    assert log[0].startswith("Vytvořena tabulka Služby") and log[1].startswith("Vytvořena tabulka Leady")
+    services_fields = [f["name"] for f in fake.requests[1]["body"]["fields"]]
+    assert services_fields[:3] == ["Název", "Stav", "Popis"] and "Pokyny pro agenta" in services_fields
+    service_link = next(f for f in fake.requests[2]["body"]["fields"] if f["name"] == "Služba")
+    assert service_link["options"] == {"linkedTableId": "tblServices"}
+    lead_link = next(f for f in fake.requests[3]["body"]["fields"] if f["name"] == "Lead")
+    assert lead_link["options"] == {"linkedTableId": "tblLeads"}
+    added = [r["body"]["name"] for r in fake.requests[4:7]]
     assert added == ["Termín", "Poznámka", "Vytvořeno"]
-    assert all(r["path"] == "/v0/meta/bases/appTEST/tables/tblTasks/fields" for r in fake.requests[3:6])
-    leads_fields = fake.requests[1]["body"]["fields"]
-    assert leads_fields[0] == {"name": "Firma", "type": "singleLineText"}
+    assert all(r["path"] == "/v0/meta/bases/appTEST/tables/tblTasks/fields" for r in fake.requests[4:7])
+    assert fake.requests[2]["body"]["fields"][0] == {"name": "Firma", "type": "singleLineText"}
+
+
+def test_setup_adds_service_link_to_existing_leads(http, client):
+    leads_fields = [{"name": f["name"]} for f in at.schema("Europe/Prague")[at.LEADS] if f["name"] != "Služba"]
+    others = [{"id": f"tbl{n}", "name": n, "fields": [{"name": f["name"]} for f in fields]}
+              for n, fields in at.schema("Europe/Prague").items() if n not in (at.SERVICES, at.LEADS)]
+    existing = {"tables": [{"id": "tblLeads", "name": "Leady", "fields": leads_fields}, *others]}
+    fake = http((200, existing), (200, {"id": "tblServices"}), (200, {}))
+    log = at.setup_base(client, "Europe/Prague")
+    assert fake.requests[2]["body"] == {"name": "Služba", "type": "multipleRecordLinks",
+                                        "options": {"linkedTableId": "tblServices"}}
+    assert "doplněno 1 polí (Služba)" in log[1]
+
+
+def test_active_services(http, client):
+    from aiagent.repos import AirtableServices
+    fake = http((200, {"records": [
+        {"id": "recS1", "fields": {"Název": "Audit skladu", "Popis": "Projdeme sklad", "Cena": "od 15 000 Kč"}},
+        {"id": "recS2", "fields": {"Popis": "bez názvu se ignoruje"}},
+    ]}))
+    services = AirtableServices(client).list_active()
+    assert services == [{"id": "recS1", "name": "Audit skladu", "description": "Projdeme sklad",
+                         "target": None, "benefits": None, "price": "od 15 000 Kč",
+                         "references": None, "url": None, "instructions": None}]
+    assert fake.requests[0]["path"] == "/v0/appTEST/Služby"
+    assert fake.requests[0]["query"]["filterByFormula"] == ['{Stav} = "Aktivní"']
+
+
+def test_lead_service_link_mapping():
+    assert _lead_to_fields({"service_id": "recS1"}) == {"Služba": ["recS1"]}
+    assert _lead_from_record({"id": "rec1", "fields": {"Služba": ["recS1"]}})["service_id"] == "recS1"
 
 
 # --- CLI ---------------------------------------------------------------------------------
@@ -226,8 +260,9 @@ def test_tools_round_trip_through_airtable(config):
         out = call(registry, "save_lead", company="Alfa s.r.o.", website="https://www.alfa.cz",
                    email="info@alfa.cz", email_source="https://alfa.cz/kontakt", status="qualified")
         assert "Uloženo: rec1 [qualified] Alfa s.r.o." in out
-        call(registry, "save_draft", id="rec1", subject="Nabídka", body="Dobrý den")
+        call(registry, "save_draft", id="rec1", subject="Nabídka", body="Dobrý den", service_id="recS1")
         fields = server.tables["Leady"]["rec1"]["fields"]
+        assert fields["Služba"] == ["recS1"]
         assert fields["Stav"] == "Návrh připraven" and fields["Text návrhu"] == "Dobrý den"
         assert fields["Doména"] == "alfa.cz"
         assert "Dobrý den" in call(registry, "get_lead", id="rec1")

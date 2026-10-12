@@ -174,3 +174,66 @@ def test_system_prompt_without_profile(config, tmp_path):
     prompt = build_system_prompt(config, sending_enabled=True)
     assert "Profil zatím není vyplněný" in prompt
     assert "Denní limit je 20" in prompt
+
+
+# --- services ------------------------------------------------------------------------
+
+SERVICES = [
+    {"id": "recS1", "name": "Audit skladu", "description": "Projdeme sklad a navrhneme úspory.",
+     "target": "E-shopy s vlastním skladem", "benefits": "Rychlejší expedice", "price": "od 15 000 Kč",
+     "references": "Firma X: -40 % času expedice", "url": "https://priklad.cz/audit",
+     "instructions": "Nezmiňuj cenu v prvním e-mailu."},
+]
+
+
+def test_system_prompt_lists_services(config):
+    prompt = build_system_prompt(config, sending_enabled=False, services=SERVICES)
+    assert "### Audit skladu (service_id: recS1)" in prompt
+    assert "- Pro koho: E-shopy s vlastním skladem" in prompt
+    assert "- Pokyny pro agenta: Nezmiňuj cenu v prvním e-mailu." in prompt
+    assert "Nabízej jen tyto služby" in prompt
+
+
+def test_system_prompt_without_services(config):
+    assert "není žádná aktivní služba" in build_system_prompt(config, sending_enabled=False, services=[])
+
+
+def test_draft_records_offered_service(registry, repos):
+    add_lead(registry)
+    call(registry, "save_draft", id="rec00001", subject="S", body="B", service_id="recS1")
+    assert repos.leads.get("rec00001")["service_id"] == "recS1"
+    assert "service_id: recS1" in call(registry, "get_lead", id="rec00001")
+    with pytest.raises(ToolError, match="service_id"):
+        call(registry, "save_draft", id="rec00001", subject="S", body="B", service_id="Audit skladu")
+
+
+def test_agent_loads_and_reloads_services(config, repos):
+    from aiagent.agent import Agent
+    calls = []
+
+    def loader():
+        calls.append(1)
+        return SERVICES if len(calls) > 1 else []
+
+    agent = Agent(config, build_registry(config, repos), client=object(), load_services=loader)
+    assert "není žádná aktivní služba" in agent.system
+    agent.reset()
+    assert "Audit skladu" in agent.system and len(calls) == 2
+
+
+def test_agent_survives_service_load_failure(config, repos):
+    from aiagent.agent import Agent, AgentEvents
+
+    class Rec(AgentEvents):
+        notices = []
+
+        def on_notice(self, text):
+            self.notices.append(text)
+
+    def broken():
+        raise RuntimeError("Airtable nedostupný")
+
+    events = Rec()
+    agent = Agent(config, build_registry(config, repos), client=object(), load_services=broken, events=events)
+    assert "není žádná aktivní služba" in agent.system
+    assert "Airtable nedostupný" in events.notices[0]

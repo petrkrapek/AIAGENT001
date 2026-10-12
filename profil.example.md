@@ -1,5 +1,6 @@
-<!-- Zkopírujte jako profil.md a vyplňte. Agent tento text čte před každou prací
-     a podle něj vybírá firmy a píše e-maily. Čím konkrétnější, tím lepší výsledky. -->
+<!-- Zkopírujte jako profil.md a vyplňte. Agent tento text čte před každou prací.
+     Popis jednotlivých nabízených služeb patří do Airtable (tabulka Služby);
+     sem patří to, co platí pro firmu jako celek. -->
 
 # Kdo jsme
 - Firma: Příklad s.r.o., IČO 12345678
@@ -7,19 +8,19 @@
 - Jedna věta o nás: Pomáháme menším e-shopům zrychlit expedici pomocí automatizace skladu.
 
 # Co nabízíme
-- Hlavní služba / produkt: ...
-- Přínos pro zákazníka (ideálně měřitelný): ...
-- Cena nebo cenový rámec (pokud ho chcete zmiňovat): ...
-- Čím se lišíme od konkurence: ...
+Jednotlivé služby (popis, pro koho, přínos, cena, reference) popište v Airtable
+v tabulce Služby a nastavte jim stav Aktivní. Agent je načte automaticky.
 
-# Komu (ideální zákazník)
+- Čím se jako firma lišíme od konkurence: ...
+
+# Komu (ideální zákazník obecně; u služeb lze upřesnit v poli „Pro koho“)
 - Obor: ... (např. e-shopy s vlastním skladem, CZ-NACE 47)
 - Velikost: ... (např. 5 až 50 zaměstnanců)
 - Region: ... (např. Jihomoravský kraj, celá ČR)
 - Signály, že nabídku potřebují: ... (např. nábor skladníků, rychlý růst, nový sklad)
 - Koho NEoslovovat: ... (např. konkurence, stávající zákazníci, veřejná správa)
 
-# Reference a důkazy (jen pravdivé)
+# Obecné reference a důkazy (jen pravdivé; reference ke službám patří do Airtable)
 - ... (např. „U firmy X jsme zkrátili expedici o 40 %“, se svolením klienta)
 
 # Výzva k akci

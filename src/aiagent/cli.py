@@ -11,7 +11,7 @@ from typing import Any
 import anthropic
 
 from . import __version__
-from .agent import Agent, AgentEvents
+from .agent import Agent, AgentEvents, format_services
 from .config import EFFORT_LEVELS, SEND_MODES, Config
 from .airtable import AirtableClient, AirtableError, LEADS, setup_base
 from .repos import airtable_repos
@@ -94,15 +94,21 @@ def auto_approver(name: str, tool_input: dict[str, Any]) -> bool:
 HELP = """Příkazy:
   /help    nápověda
   /leads   přehled leadů (potenciálních zákazníků)
+  /sluzby  nabízené služby z Airtable
   /tools   seznam nástrojů
   /tasks   otevřené úkoly
-  /reset   začít novou konverzaci
+  /reset   začít novou konverzaci (znovu načte profil a služby)
   /exit    konec (také Ctrl+D)"""
 
 
 def chat(agent: Agent) -> None:
     print(bold(f"AI obchodník {__version__}") + dim(f"  ·  model {agent.config.model}  ·  /help"))
     print(dim(f"Data: Airtable báze {agent.config.airtable_base_id}"))
+    if agent.services:
+        print(dim(f"Nabízené služby: {', '.join(s['name'] for s in agent.services)}"))
+    else:
+        print(yellow("! V Airtable (tabulka Služby) není žádná aktivní služba. "
+                     "Popište, co nabízíte, a nastavte stav Aktivní."))
     if agent.config.load_profile() is None:
         print(yellow(f"! Chybí profil firmy ({agent.config.profile_path.name}). "
                      "Zkopírujte profil.example.md jako profil.md a vyplňte ho."))
@@ -136,6 +142,13 @@ def chat(agent: Agent) -> None:
                 print(f"  {tool.name}{dim(mark)}")
             for tool in agent.registry.server_tools:
                 print(f"  {tool['name']}{dim(' (server)')}")
+            continue
+        if user_input in ("/sluzby", "/služby", "/services"):
+            agent.reset()
+            # Show the services without the instructions meant for the model.
+            print(format_services(agent.services).split("\n\n", 1)[1] if agent.services
+                  else "Žádné aktivní služby.")
+            print(dim("(Služby znovu načteny, konverzace začíná znovu.)"))
             continue
         if user_input in ("/leads", "/tasks"):
             tool = agent.registry.get("list_leads" if user_input == "/leads" else "list_tasks")
@@ -281,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         config,
         build_registry(config, repos),
         audit=repos.audit,
+        load_services=repos.services.list_active,
         approver=approver,
         events=ConsoleEvents(),
         show_thinking=args.show_thinking,

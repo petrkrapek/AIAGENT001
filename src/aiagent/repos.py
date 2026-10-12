@@ -72,7 +72,7 @@ class MemoryLeads:
         self._ids = itertools.count(1)
 
     def create(self, lead: dict[str, Any]) -> dict[str, Any]:
-        lead = {**lead, "id": f"rec{next(self._ids):05d}", "domain": domain(lead.get("website")),
+        lead = {"service_id": None, **lead, "id": f"rec{next(self._ids):05d}", "domain": domain(lead.get("website")),
                 "draft": None, "last_contacted": None, "created_at": now_iso(), "updated_at": now_iso()}
         self.leads[lead["id"]] = lead
         return dict(lead)
@@ -131,6 +131,14 @@ class MemoryLeads:
         return sum(1 for e in self.sent if local_day(e["sent_at"], self.tz) == day)
 
 
+class MemoryServices:
+    def __init__(self, services: list[dict[str, Any]] | None = None):
+        self.services = services or []
+
+    def list_active(self) -> list[dict[str, Any]]:
+        return [dict(s) for s in self.services]
+
+
 class MemoryTasks:
     def __init__(self):
         self.tasks: dict[str, dict[str, Any]] = {}
@@ -170,6 +178,7 @@ def _lead_from_record(record: dict[str, Any]) -> dict[str, Any]:
     lead["id"] = record["id"]
     lead["company"] = lead["company"] or "(bez názvu)"
     lead["status"] = LEAD_STATUS_CODES.get(f.get("Stav"), "new")
+    lead["service_id"] = (f.get("Služba") or [None])[0]
     lead["draft"] = (
         {"subject": f.get("Předmět návrhu", ""), "body": f.get("Text návrhu", ""), "updated_at": f.get("Návrh upraven")}
         if f.get("Text návrhu") else None
@@ -182,6 +191,8 @@ def _lead_to_fields(changes: dict[str, Any]) -> dict[str, Any]:
     for key, value in changes.items():
         if key == "status":
             fields["Stav"] = at.LEAD_STATUS_LABELS[value]
+        elif key == "service_id":
+            fields["Služba"] = [value] if value else []
         elif key == "draft":
             draft = value or {}
             fields["Předmět návrhu"] = draft.get("subject")
@@ -194,6 +205,18 @@ def _lead_to_fields(changes: dict[str, Any]) -> dict[str, Any]:
     if "website" in changes:
         fields["Doména"] = domain(changes["website"]) or None
     return fields
+
+
+SERVICE_FIELDS = {
+    "name": "Název",
+    "description": "Popis",
+    "target": "Pro koho",
+    "benefits": "Přínos pro zákazníka",
+    "price": "Cena",
+    "references": "Reference",
+    "url": "Odkaz",
+    "instructions": "Pokyny pro agenta",
+}
 
 
 class AirtableLeads:
@@ -284,6 +307,23 @@ class AirtableLeads:
         return len(self.client.list_records(at.EMAILS, formula, fields=["Předmět"]))
 
 
+class AirtableServices:
+    def __init__(self, client: at.AirtableClient):
+        self.client = client
+
+    def list_active(self) -> list[dict[str, Any]]:
+        records = self.client.list_records(
+            at.SERVICES, f"{{Stav}} = {at.esc(at.SERVICE_ACTIVE)}", sort=[("Název", "asc")]
+        )
+        services = []
+        for record in records:
+            f = record.get("fields", {})
+            if not f.get("Název"):
+                continue
+            services.append({"id": record["id"], **{k: f.get(name) for k, name in SERVICE_FIELDS.items()}})
+        return services
+
+
 class AirtableTasks:
     def __init__(self, client: at.AirtableClient):
         self.client = client
@@ -343,11 +383,13 @@ class Repos:
     leads: Any
     tasks: Any
     audit: Any
+    services: Any
 
 
 def airtable_repos(client: at.AirtableClient, tz: str) -> Repos:
-    return Repos(AirtableLeads(client, tz), AirtableTasks(client), AirtableAudit(client))
+    return Repos(AirtableLeads(client, tz), AirtableTasks(client), AirtableAudit(client),
+                 AirtableServices(client))
 
 
 def memory_repos(tz: str = "Europe/Prague") -> Repos:
-    return Repos(MemoryLeads(tz), MemoryTasks(), MemoryAudit())
+    return Repos(MemoryLeads(tz), MemoryTasks(), MemoryAudit(), MemoryServices())

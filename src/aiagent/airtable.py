@@ -138,6 +138,7 @@ class AirtableClient:
 
 # --- schema --------------------------------------------------------------------
 
+SERVICES = "Služby"
 LEADS = "Leady"
 EMAILS = "E-maily"
 TASKS = "Úkoly"
@@ -153,6 +154,8 @@ LEAD_STATUS_LABELS = {
     "not_interested": "Nemá zájem",
     "do_not_contact": "Nekontaktovat",
 }
+SERVICE_ACTIVE = "Aktivní"
+SERVICE_INACTIVE = "Neaktivní"
 TASK_STATUS_LABELS = {
     "todo": "K vyřízení",
     "in_progress": "Probíhá",
@@ -188,6 +191,18 @@ def _datetime(name: str, timezone: str) -> dict[str, Any]:
 def schema(timezone: str) -> dict[str, list[dict[str, Any]]]:
     """Tables and fields; the first field of each table is its primary field."""
     return {
+        # Services first: Leady links to it.
+        SERVICES: [
+            _text("Název"),
+            _select("Stav", [SERVICE_ACTIVE, SERVICE_INACTIVE]),
+            _long("Popis"),
+            _long("Pro koho"),
+            _long("Přínos pro zákazníka"),
+            _text("Cena"),
+            _long("Reference"),
+            {"name": "Odkaz", "type": "url"},
+            _long("Pokyny pro agenta"),
+        ],
         LEADS: [
             _text("Firma"),
             _select("Stav", list(LEAD_STATUS_LABELS.values())),
@@ -202,6 +217,7 @@ def schema(timezone: str) -> dict[str, list[dict[str, Any]]]:
             _text("Obor"),
             _long("Proč se hodí"),
             _long("Poznámky"),
+            {"name": "Služba", "type": "multipleRecordLinks", "options": {"linkedTableId": SERVICES}},
             _text("Předmět návrhu"),
             _long("Text návrhu"),
             _datetime("Návrh upraven", timezone),

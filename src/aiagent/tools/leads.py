@@ -21,7 +21,7 @@ STATUSES = (
 
 EDITABLE = (
     "company", "ico", "website", "email", "email_source", "contact_name", "contact_role",
-    "city", "industry", "fit_reason", "notes", "status",
+    "city", "industry", "fit_reason", "notes", "status", "service_id",
 )
 
 
@@ -33,7 +33,8 @@ def format_lead(lead: dict[str, Any], full: bool = False, emails: list[dict[str,
     if not full:
         return line
     rows = [line]
-    for key in ("ico", "contact_name", "contact_role", "industry", "email_source", "fit_reason", "notes"):
+    for key in ("ico", "contact_name", "contact_role", "industry", "email_source", "fit_reason", "notes",
+                "service_id"):
         if lead.get(key):
             rows.append(f"  {key}: {lead[key]}")
     if lead.get("draft"):
@@ -41,6 +42,11 @@ def format_lead(lead: dict[str, Any], full: bool = False, emails: list[dict[str,
     for sent in emails or []:
         rows.append(f"  odesláno {sent['sent_at']} na {sent['to']}: {sent['subject']}")
     return "\n".join(rows)
+
+
+def _check_service(service_id: str | None) -> None:
+    if service_id and not service_id.startswith("rec"):
+        raise ToolError("service_id je ID služby z tabulky Služby (začíná 'rec'), viz přehled služeb.")
 
 
 def build(config: Config, repo: Any) -> list[Tool]:
@@ -57,7 +63,9 @@ def build(config: Config, repo: Any) -> list[Tool]:
         fit_reason: str | None = None,
         notes: str | None = None,
         status: str = "new",
+        service_id: str | None = None,
     ) -> str:
+        _check_service(service_id)
         if status not in STATUSES:
             raise ToolError(f"Neplatný stav '{status}'.")
         if email and not email_source:
@@ -69,7 +77,7 @@ def build(config: Config, repo: Any) -> list[Tool]:
             "company": company, "ico": ico, "website": website, "email": email,
             "email_source": email_source, "contact_name": contact_name, "contact_role": contact_role,
             "city": city, "industry": industry, "fit_reason": fit_reason, "notes": notes,
-            "status": status,
+            "status": status, "service_id": service_id,
         })
         return f"Uloženo: {format_lead(lead)}"
 
@@ -93,15 +101,19 @@ def build(config: Config, repo: Any) -> list[Tool]:
             raise ToolError(f"Nelze měnit: {', '.join(sorted(unknown))}.")
         if "status" in changes and changes["status"] not in STATUSES:
             raise ToolError(f"Neplatný stav '{changes['status']}'.")
+        _check_service(changes.get("service_id"))
         if changes.get("email") and not (changes.get("email_source") or repo.get(id).get("email_source")):
             raise ToolError("U e-mailu uveď email_source (URL stránky, kde je zveřejněný).")
         return f"Upraveno: {format_lead(repo.update(id, changes))}"
 
-    def save_draft(id: str, subject: str, body: str) -> str:
+    def save_draft(id: str, subject: str, body: str, service_id: str | None = None) -> str:
+        _check_service(service_id)
         lead = repo.get(id)
         if lead["status"] == "do_not_contact":
             raise ToolError("Tento kontakt si nepřeje být oslovován.")
         changes: dict[str, Any] = {"draft": {"subject": subject, "body": body, "updated_at": now_iso()}}
+        if service_id:
+            changes["service_id"] = service_id
         if lead["status"] in ("new", "qualified"):
             changes["status"] = "drafted"
         repo.update(id, changes)
@@ -123,6 +135,10 @@ def build(config: Config, repo: Any) -> list[Tool]:
         },
         "notes": {"type": "string"},
         "status": {"type": "string", "enum": list(STATUSES)},
+        "service_id": {
+            "type": "string",
+            "description": "ID nabízené služby z tabulky Služby (rec…), pokud už je jasné, co firmě nabídnout.",
+        },
     }
     id_field = {"id": {"type": "string", "description": "ID leadu v Airtable (rec…)."}}
 
@@ -176,6 +192,7 @@ def build(config: Config, repo: Any) -> list[Tool]:
                     **id_field,
                     "subject": {"type": "string"},
                     "body": {"type": "string", "description": "Celý text e-mailu včetně podpisu."},
+                    "service_id": {"type": "string", "description": "ID služby, kterou e-mail nabízí (rec…)."},
                 },
                 ["id", "subject", "body"],
             ),

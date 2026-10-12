@@ -2,7 +2,7 @@
 
 Agent pro příkazovou řádku postavený na [Claude API](https://platform.claude.com/docs). Vyhledává potenciální zákazníky, ověří, že jim vaše nabídka dává smysl, najde jejich veřejný kontakt a napíše jim osobní e-mail s nabídkou spolupráce. Každý e-mail vám před odesláním ukáže ke schválení.
 
-Všechna data (leady, návrhy e-mailů, odeslané e-maily, úkoly a audit log) ukládá do vaší báze v **[Airtable](https://airtable.com)**. Lokálně neukládá nic, takže leady můžete procházet, filtrovat a upravovat přímo v Airtable a agent při další práci vychází z aktuálního stavu.
+Všechna data (leady, návrhy e-mailů, odeslané e-maily, úkoly a audit log) ukládá do vaší báze v **[Airtable](https://airtable.com)**. Tam také popíšete služby, které nabízíte. Lokálně neukládá nic, takže leady můžete procházet, filtrovat a upravovat přímo v Airtable a agent při další práci vychází z aktuálního stavu.
 
 ```
 vy › Najdi 10 e-shopů s vlastním skladem v Jihomoravském kraji a připrav jim nabídku.
@@ -21,7 +21,7 @@ Mám návrhy odeslat?
 ## Jak agent pracuje
 
 1. **Hledání:** české firmy hledá v obchodním rejstříku ARES (podle oboru, města a názvu) a na webu (katalogy, oborové seznamy, zprávy).
-2. **Kvalifikace:** projde web firmy, porovná ji s vaším ideálním zákazníkem z profilu a najde konkrétní důvod, proč by je nabídka mohla zajímat.
+2. **Kvalifikace:** projde web firmy, porovná ji s vaším ideálním zákazníkem a se službami z Airtable, vybere službu, která firmě nejvíc dává smysl, a najde konkrétní důvod, proč by ji mohla zajímat.
 3. **Kontakt:** použije jen e-mail, který firma sama zveřejňuje, a zapíše, kde ho našel. Adresy nehádá.
 4. **Databáze leadů v Airtable:** každou vhodnou firmu uloží i s odůvodněním. Hlídá duplicity (IČO, e-mail, doména), takže nikoho neosloví dvakrát.
 5. **E-mail na míru:** krátký, věcný, s odkazem na konkrétní zjištění o firmě, jednou výzvou k akci, vaším podpisem a možností odhlášení. Návrh uloží k leadu v Airtable, kde ho můžete zkontrolovat i upravit.
@@ -42,22 +42,42 @@ Mám návrhy odeslat?
 
 ## Airtable
 
-Agent používá ve vaší bázi čtyři tabulky. Vytvoří je sám příkazem `aiagent airtable-setup`:
+Agent používá ve vaší bázi pět tabulek. Vytvoří je sám příkazem `aiagent airtable-setup`:
 
 | Tabulka | Obsah |
 |---|---|
-| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, návrh e-mailu (předmět, text), kdy byl naposledy osloven |
+| **Služby** | co nabízíte; **vyplňujete vy**, agent jen čte |
+| **Leady** | firma, stav, IČO, web, e-mail a jeho zdroj, kontaktní osoba, město, obor, proč se hodí, poznámky, nabízená služba, návrh e-mailu (předmět, text), kdy byl naposledy osloven |
 | **E-maily** | každý odeslaný e-mail: předmět, text, komu, kdy, propojený s leadem |
 | **Úkoly** | připomínky a follow-upy s termínem |
 | **Audit** | záznam každé akce agenta: nástroj, vstup, čas, schválení a výsledek |
 
 Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví.
 
+### Tabulka Služby
+
+Každá služba je jeden řádek. Agent nabízí jen služby ve stavu **Aktivní** a čerpá jen z toho, co v nich napíšete:
+
+| Pole | Co do něj napsat |
+|---|---|
+| Název | krátký název služby |
+| Stav | Aktivní / Neaktivní (neaktivní agent ignoruje) |
+| Popis | co přesně služba obsahuje |
+| Pro koho | jakým firmám je určená a podle čeho poznat, že ji potřebují |
+| Přínos pro zákazníka | co zákazník získá, ideálně měřitelně |
+| Cena | cena nebo cenový rámec (nepovinné) |
+| Reference | pravdivé reference a výsledky ke službě |
+| Odkaz | stránka služby na vašem webu |
+| Pokyny pro agenta | zvláštní pravidla, např. „v prvním e-mailu nezmiňuj cenu“ |
+
+Agent služby načte při spuštění a pak při `/reset` nebo `/sluzby`. Úpravy v Airtable se tak projeví bez restartu. U každého leadu a návrhu e-mailu zapíše, kterou službu nabízel (pole Služba), takže v Airtable uvidíte, co komu šlo.
+
 **Nastavení:**
 1. Vytvořte v Airtable prázdnou bázi (např. „AI obchodník“). Její ID najdete v URL: `airtable.com/appXXXXXXXXXXXXXX/…`.
 2. Vytvořte osobní token na <https://airtable.com/create/tokens> s oprávněními `data.records:read`, `data.records:write`, `schema.bases:read` a `schema.bases:write` a s přístupem k této bázi.
 3. Doplňte do `.env` hodnoty `AIRTABLE_TOKEN` a `AIRTABLE_BASE_ID`.
 4. Spusťte `aiagent airtable-setup` (v Dockeru `docker compose run --rm agent airtable-setup`). Příkaz vytvoří chybějící tabulky a pole. Existující data nemění, takže ho můžete spustit kdykoli znovu, třeba po aktualizaci agenta.
+5. V tabulce **Služby** popište, co nabízíte, a nastavte stav Aktivní.
 
 Do tabulek můžete přidávat vlastní pole i pohledy (třeba kanban podle stavu). Jen nepřejmenovávejte pole, která agent používá.
 
@@ -72,6 +92,7 @@ cp .env.example .env               # doplňte ANTHROPIC_API_KEY a údaje Airtabl
 cp profil.example.md profil.md     # popište svou firmu a nabídku
 docker compose build
 docker compose run --rm agent airtable-setup   # vytvoří tabulky v Airtable
+# v Airtable vyplňte tabulku Služby
 ```
 
 **Chat s agentem:**
@@ -119,9 +140,13 @@ aiagent airtable-setup             # vytvoří tabulky v Airtable
 
 API klíč vytvoříte na <https://platform.claude.com/settings/keys>.
 
-### Profil firmy (`profil.md`)
+### Profil firmy (`profil.md`) a služby (Airtable)
 
-Tohle je nejdůležitější krok. Podle profilu agent vybírá firmy a píše e-maily. Vyplňte, co nabízíte, komu (obor, velikost, region, podle čeho poznat, že nabídku potřebují), čím se lišíte, pravdivé reference, jakou akci od adresáta chcete a svůj podpis. Bez profilu se vás agent na tyto informace nejdřív zeptá.
+Tohle je nejdůležitější krok. Podle profilu a služeb agent vybírá firmy a píše e-maily.
+- **Služby** popište v Airtable (viz [Tabulka Služby](#tabulka-služby)).
+- **`profil.md`** obsahuje to, co platí pro firmu jako celek: kdo jste, čím se lišíte, obecný ideální zákazník, koho neoslovovat, jakou akci od adresáta chcete, tón e-mailů a podpis.
+
+Když něco chybí, agent se vás na to před psaním e-mailů zeptá.
 
 ### Odesílání e-mailů
 
@@ -167,7 +192,7 @@ Příklady zadání:
 - „Firma Beta odpověděla, že nemá zájem.“ (nastaví `do_not_contact`)
 - „Firma Alfa má zájem, připomeň mi zavolat jim v pondělí.“
 
-V chatu fungují příkazy `/leads`, `/tasks`, `/tools`, `/reset`, `/help` a `/exit`. Export do CSV nebo Excelu uděláte přímo v Airtable.
+V chatu fungují příkazy `/leads`, `/sluzby`, `/tasks`, `/tools`, `/reset`, `/help` a `/exit`. Export do CSV nebo Excelu uděláte přímo v Airtable.
 
 **Jeden úkol a konec** (třeba ranní hledání přes cron):
 
