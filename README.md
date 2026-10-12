@@ -42,7 +42,42 @@ u 2 firem jsem nenašel veřejný e-mail. Mám návrhy odeslat?
 
 Stavy leadu: `new` → `qualified` → `drafted` → `contacted` → `replied` / `interested` / `not_interested` / `do_not_contact`.
 
-## Instalace
+## Spuštění v Dockeru (doporučeno)
+
+Potřebujete jen [Docker](https://docs.docker.com/get-docker/) s Docker Compose. Python instalovat nemusíte.
+
+```bash
+git clone https://github.com/petrkrapek/AIAGENT001.git
+cd AIAGENT001
+cp .env.example .env               # doplňte ANTHROPIC_API_KEY
+cp profil.example.md profil.md     # popište svou firmu a nabídku
+mkdir -p workspace                 # sem agent ukládá leady, návrhy a logy
+docker compose build
+```
+
+**Chat s agentem:**
+
+```bash
+docker compose run --rm agent
+```
+
+**Jeden úkol a konec:**
+
+```bash
+docker compose run --rm agent run "Najdi 5 stavebních firem v Brně a připrav jim nabídky."
+```
+
+Data zůstávají na vašem počítači: leady, návrhy e-mailů (`workspace/navrhy/`) a logy ve složce `workspace/`, profil v `profil.md`. Po úpravě profilu nebo `.env` stačí agenta spustit znovu. Po změně kódu spusťte `docker compose build`.
+
+Kontejner běží pod neprivilegovaným uživatelem a příkazy agenta (`run_command`) se spouštějí jen uvnitř kontejneru. Na Linuxu musí mít kontejner právo zapisovat do složky `workspace`. Pokud vaše UID není 1000, přidejte do `.env` řádky `AIAGENT_UID=…` a `AIAGENT_GID=…` (zjistíte je příkazy `id -u` a `id -g`).
+
+**Pravidelné spouštění přes cron hostitele** (`-T` vypne terminál, takže agent e-maily neodesílá a jen připraví návrhy):
+
+```cron
+50 7 * * 1-5  cd /cesta/k/AIAGENT001 && docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> workspace/cron.log 2>&1
+```
+
+## Instalace bez Dockeru
 
 Je potřeba Python 3.10 nebo novější.
 
@@ -67,6 +102,8 @@ Tohle je nejdůležitější krok. Podle profilu agent vybírá firmy a píše e
 Bez nastaveného SMTP agent jen ukládá návrhy a odeslání necháte na sobě. Pro odesílání doplňte do `.env` údaje SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`). Hodí se samostatná obchodní schránka. Limit `AIAGENT_DAILY_EMAIL_LIMIT` (výchozí 20) chrání pověst vaší domény.
 
 ## Použití
+
+V Dockeru pište místo `aiagent` příkaz `docker compose run --rm agent`. Přepínače i zadání zůstávají stejné.
 
 **Interaktivní chat:**
 

@@ -1,0 +1,21 @@
+services:
+  agent:
+    build: .
+    image: aiagent:latest
+    env_file: .env
+    # On Linux, match the owner of ./workspace (see `id -u` / `id -g`).
+    user: "${AIAGENT_UID:-1000}:${AIAGENT_GID:-1000}"
+    stdin_open: true
+    tty: true
+    volumes:
+      - type: bind
+        source: ./workspace
+        target: /data/workspace
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./profil.md
+        target: /data/profil.md
+        read_only: true
+        bind:
+          create_host_path: false

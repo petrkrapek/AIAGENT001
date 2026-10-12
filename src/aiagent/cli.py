@@ -201,9 +201,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         approver = deny_all  # nobody to ask: refuse actions that need approval
 
+    try:
+        registry = build_registry(config)
+        writable = os.access(config.workspace, os.W_OK)
+    except PermissionError:
+        writable = False
+    if not writable:
+        print(red(f"Do pracovního adresáře {config.workspace} nelze zapisovat. V Dockeru nastavte "
+                  "AIAGENT_UID a AIAGENT_GID podle vlastníka složky workspace (id -u, id -g)."),
+              file=sys.stderr)
+        return 2
+
     agent = Agent(
         config,
-        build_registry(config),
+        registry,
         approver=approver,
         events=ConsoleEvents(),
         show_thinking=args.show_thinking,
