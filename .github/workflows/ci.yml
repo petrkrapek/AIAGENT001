@@ -37,5 +37,5 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - run: docker build -t aiagent:ci .
-      # As docker compose runs it: read-only filesystem, writable /tmp only.
-      - run: docker run --rm --read-only --tmpfs /tmp --cap-drop ALL aiagent:ci --version
+      # As docker compose runs it: init, read-only filesystem with a writable /tmp, memory limit.
+      - run: docker run --rm --init --read-only --tmpfs /tmp --memory 1g aiagent:ci --version
