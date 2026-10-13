@@ -76,15 +76,16 @@ class MemoryLeads:
             for lead in self.leads.values()
         )
 
-    def search(self, status: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
-        leads = list(self.leads.values())
+    def search(self, status: str | None = None, query: str | None = None,
+               limit: int | None = None) -> list[dict[str, Any]]:
+        leads = list(reversed(self.leads.values()))  # newest first
         if status:
             leads = [lead for lead in leads if lead["status"] == status]
         if query:
             q = query.lower()
             leads = [lead for lead in leads
                      if q in " ".join(str(lead.get(k) or "") for k in SEARCH_FIELDS).lower()]
-        return [dict(lead) for lead in leads]
+        return [dict(lead) for lead in leads[:limit]]
 
     def status_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -156,7 +157,7 @@ class MemoryBlocklist:
         """What a person does in Airtable: values as typed, e.g. a URL in the Doména field."""
         self.rows.append({"name": name, "email": email, "domain": domain, "ico": ico, "reason": reason})
 
-    def entries(self) -> list[dict[str, Any]]:
+    def entries(self, fresh: bool = False) -> list[dict[str, Any]]:
         return [blocked_entry(r["name"], r["email"], r["domain"], r["ico"], r["reason"]) for r in self.rows]
 
     def add(self, entry: dict[str, Any]) -> None:

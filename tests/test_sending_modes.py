@@ -6,7 +6,7 @@ from aiagent.agent import build_system_prompt
 from aiagent.cli import main
 from aiagent.config import Config, SmtpConfig
 from aiagent.tools import ToolError, build_registry
-from aiagent.tools.mail import open_smtp, smtp_check
+from aiagent.tools.mail import build_message, open_smtp, smtp_check
 
 SMTP_ENV = {"SMTP_HOST": "smtp.example.com", "SMTP_USER": "obchod@priklad.cz",
             "SMTP_PASSWORD": "tajne", "SMTP_FROM": "obchod@priklad.cz"}
@@ -27,6 +27,11 @@ def test_send_mode_defaults(clean_env):
         clean_env.setenv(key, value)
     config = Config.from_env()
     assert config.send_mode == "approve" and config.smtp.security == "starttls"
+
+
+def test_send_mode_ignores_whitespace(clean_env):
+    clean_env.setenv("AIAGENT_SEND_MODE", " off ")
+    assert Config.from_env().send_mode == "off"
 
 
 def test_port_465_uses_ssl(clean_env):
@@ -91,8 +96,21 @@ def test_new_draft_resets_approval(config, repos):
 
 def test_yes_flag_does_not_approve_emails(capsys):
     from aiagent.cli import auto_approver
-    assert auto_approver("send_email", {}) is False
-    assert auto_approver("http_request", {"url": "https://x"}) is True
+    approve = auto_approver(("hook.eu1.make.com",))
+    assert approve("send_email", {}) is False
+    assert approve("add_task", {"title": "x"}) is True
+
+
+def test_yes_flag_approves_http_only_to_allowed_hosts(capsys, clean_env):
+    from aiagent.cli import auto_approver
+    assert auto_approver()("http_request", {"url": "https://hook.eu1.make.com/abc"}) is False
+    clean_env.setenv("AIAGENT_HTTP_ALLOWED_HOSTS", " Hook.EU1.make.com , hooks.slack.com,")
+    approve = auto_approver(Config.from_env().http_allowed_hosts)
+    assert approve("http_request", {"url": "https://hook.eu1.make.com/abc"}) is True
+    # A page read in the same run must not be able to steer data to any other server.
+    assert approve("http_request", {"url": "https://attacker.example/?data=leady"}) is False
+    assert approve("http_request", {"url": "https://hook.eu1.make.com.attacker.example/"}) is False
+    assert "AIAGENT_HTTP_ALLOWED_HOSTS" in capsys.readouterr().out
 
 
 def test_system_prompt_per_mode(config):
@@ -148,6 +166,11 @@ def test_outreach_headers(config, repos):
         registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz", subject="S", body="B")
     sent = smtp_cls.return_value.__enter__.return_value.send_message.call_args[0][0]
     assert sent["Date"] and sent["List-Unsubscribe"] == "<mailto:obchod@priklad.cz?subject=Odhlaseni>"
+    # SMTP_FROM with a display name: the headers need the bare address.
+    sent = build_message(SmtpConfig(host="h", sender="Obchod Příklad <obchod@priklad.cz>"), "info@alfa.cz", "S", "B",
+                         unsubscribe=True)
+    assert sent["List-Unsubscribe"] == "<mailto:obchod@priklad.cz?subject=Odhlaseni>"
+    assert sent["Message-ID"].endswith("@priklad.cz>") and ">>" not in sent["Message-ID"]
     assert within_hours(dt(2026, 10, 12, 8, 0), (8, 17))         # Monday 8:00
     assert not within_hours(dt(2026, 10, 12, 17, 0), (8, 17))    # Monday 17:00
     assert not within_hours(dt(2026, 10, 17, 10, 0), (8, 17))    # Saturday
@@ -188,6 +211,23 @@ def test_pause_between_emails(config, repos):
         sleep.assert_not_called()  # the first e-mail goes out right away
         registry.get("send_email").handler(lead_id="rec00000000000002", to="info@beta.cz", subject="S", body="B")
     sleep.assert_called_once_with(50.0)  # 60 s pause, 10 s already passed (e.g. while approving)
+
+
+def test_sending_window_is_checked_again_after_the_pause(config, repos):
+    from datetime import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    config = smtp_config(config, "approve")
+    config.send_hours = (8, 17)
+    registry = build_registry(config, repos)
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    before, after = (dt(2026, 10, 12, h, m, tzinfo=ZoneInfo("Europe/Prague")) for h, m in ((16, 55), (17, 10)))
+    with mock.patch("aiagent.tools.mail.now_in", side_effect=[before, before, after]), \
+            mock.patch("aiagent.tools.mail.smtplib.SMTP") as smtp_cls:
+        with pytest.raises(ToolError, match="mimo povolenou dobu"):
+            registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz", subject="S", body="B")
+    smtp_cls.assert_not_called()
+    assert repos.leads.get("rec00000000000001")["sending_started"] is None
 
 
 def test_pause_and_hours_from_env(clean_env):
@@ -268,6 +308,31 @@ def test_failed_copy_does_not_fail_the_send(config, repos, fake_imap):
                                                  subject="Nabídka", body="Text")
     assert "odeslán" in out and "AUTHENTICATIONFAILED" in out
     assert repos.leads.get("rec00000000000001")["status"] == "contacted"
+
+
+def test_send_is_recorded_whatever_the_copy_fails_with(config, repos, fake_imap):
+    from aiagent.config import ImapConfig
+    config = smtp_config(config, "approve")
+    config.imap = ImapConfig(host="imap.example.com", user="obchod@priklad.cz", password="heslo-s-čárkou")
+    registry = build_registry(config, repos)
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    # imaplib sends the login as ASCII; a password with diacritics fails with UnicodeEncodeError.
+    fake_imap.login.side_effect = UnicodeEncodeError("ascii", "č", 0, 1, "ordinal not in range(128)")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"):
+        out = registry.get("send_email").handler(lead_id="rec00000000000001", to="info@alfa.cz",
+                                                 subject="Nabídka", body="Text")
+    assert "odeslán" in out and "diakritiku" in out
+    assert repos.leads.get("rec00000000000001")["status"] == "contacted"
+    assert len(repos.leads.emails("rec00000000000001")) == 1
+
+    # Even an unexpected error in the copy can't keep the send from being recorded.
+    registry.get("save_lead").handler(company="Beta", email="info@beta.cz", email_source="https://beta.cz")
+    fake_imap.login.side_effect = RuntimeError("neočekávaná chyba")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP"):
+        out = registry.get("send_email").handler(lead_id="rec00000000000002", to="info@beta.cz",
+                                                 subject="Nabídka", body="Text")
+    assert "odeslán" in out and "neočekávaná chyba" in out
+    assert repos.leads.get("rec00000000000002")["status"] == "contacted"
 
 
 def test_cli_smtp_test_checks_imap(clean_env, capsys, fake_imap):

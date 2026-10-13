@@ -157,7 +157,7 @@ V chatu (`docker compose run --rm agent`) se vás agent před každým e-mailem 
 **Pravidelné spouštění přes cron hostitele** (`-T` vypne terminál; v režimu `approve` proto agent jen připraví návrhy, v režimu `auto` odešle ty, které jste schválili v Airtable):
 
 ```cron
-50 7 * * 1-5  cd /cesta/k/AIAGENT001 && docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> $HOME/aiagent.log 2>&1
+50 7 * * 1-5  cd /cesta/k/AIAGENT001 && flock -n /tmp/aiagent.lock docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> $HOME/aiagent.log 2>&1
 ```
 
 ## Instalace bez Dockeru
@@ -245,12 +245,12 @@ V chatu fungují příkazy `/leads`, `/profil`, `/sluzby`, `/tasks`, `/tools`, `
 aiagent run "Najdi 5 nových firem podle profilu a připrav jim návrhy e-mailů."
 ```
 
-Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` proto e-maily neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Pro odesílání bez dozoru použijte `--send-mode auto` (nebo `AIAGENT_SEND_MODE=auto`), který pošle jen návrhy schválené v Airtable. Přepínač `--yes` schvaluje ostatní akce (např. webhooky), e-maily ale nikdy.
+Když agent běží bez terminálu, nemá se koho zeptat. V režimu `approve` proto e-maily neodešle a připraví jen návrhy, které ráno projdete a schválíte v chatu. Pro odesílání bez dozoru použijte `--send-mode auto` (nebo `AIAGENT_SEND_MODE=auto`), který pošle jen návrhy schválené v Airtable. Přepínač `--yes` schvaluje ostatní akce, e-maily ale nikdy. HTTP požadavky (webhooky) schválí jen na servery uvedené v `AIAGENT_HTTP_ALLOWED_HOSTS`, aby obsah načtené webové stránky nemohl agenta navést k odeslání dat jinam.
 
-Návratový kód příkazu `run` je 0, když agent úkol dokončil, 1 při chybě nebo nedokončení (odmítnutí, limit délky nebo kroků) a 130 po Ctrl+C, takže ho cron i skripty umí vyhodnotit. Zadání můžete předat i souborem: `aiagent run -f zadani.md` (nebo `-f -` ze standardního vstupu).
+`flock -n` v příkladech cronu zajistí, že nový běh nezačne, dokud předchozí neskončí (dva souběžné běhy by si mohly přetahovat denní limit e-mailů). Návratový kód příkazu `run` je 0, když agent úkol dokončil, 1 při chybě nebo nedokončení (odmítnutí, limit délky nebo kroků) a 130 po Ctrl+C, takže ho cron i skripty umí vyhodnotit. Zadání můžete předat i souborem: `aiagent run -f zadani.md` (nebo `-f -` ze standardního vstupu).
 
 ```cron
-50 7 * * 1-5  cd /cesta/k/AIAGENT001 && .venv/bin/aiagent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> $HOME/aiagent.log 2>&1
+50 7 * * 1-5  cd /cesta/k/AIAGENT001 && flock -n /tmp/aiagent.lock .venv/bin/aiagent run "Najdi 5 nových firem podle profilu a připrav návrhy." >> $HOME/aiagent.log 2>&1
 ```
 
 Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-mode` a `--show-thinking`.
@@ -270,6 +270,7 @@ Další přepínače: `--model`, `--effort low|medium|high|xhigh|max`, `--send-m
 | `AIAGENT_SUBAGENTS` | `1` | každou firmu prověřuje samostatný krátký běh agenta (`0` = vše v jedné konverzaci) |
 | `AIAGENT_SUBAGENT_MODEL` | jako `AIAGENT_MODEL` | model pro prověřování firem (např. levnější `claude-sonnet-5-5`) |
 | `AIAGENT_CONTEXT_TRIGGER` | `60000` | od kolika tokenů v požadavku se ze starší historie mažou výsledky nástrojů (stránky webů, výsledky hledání); `0` = vypnuto |
+| `AIAGENT_HTTP_ALLOWED_HOSTS` | prázdné | servery (oddělené čárkou), na které smí běh s `--yes` posílat HTTP požadavky bez dotazu, např. `hook.eu1.make.com` |
 | `AIAGENT_TIMEZONE` | `Europe/Prague` | časové pásmo |
 | `AIAGENT_WEB_TOOLS` | `1` | vyhledávání a čtení webu |
 | `AIAGENT_SEND_MODE` | `approve` se SMTP, jinak `off` | režim odesílání: `off`, `approve`, `auto` |
@@ -322,7 +323,8 @@ Vytvořte soubor v `src/aiagent/tools/` s funkcí `build(config) -> list[Tool]` 
 ## Vývoj
 
 ```bash
-pip install -e ".[dev]"
+pip install --require-hashes -r requirements-dev.lock   # stejné verze jako CI a Docker image
+pip install --no-deps -e .
 ruff check .        # linter
 mypy                # typová kontrola
 pytest --cov=aiagent
@@ -330,16 +332,19 @@ pytest --cov=aiagent
 
 Testy nepotřebují API klíč ani síť. Claude API, Airtable, ARES i SMTP jsou v nich simulované a testy neovlivní proměnné prostředí ani váš `.env`. Stejné kontroly a sestavení Docker image spouští GitHub Actions (`.github/workflows/ci.yml`) na Pythonu 3.10 a 3.13.
 
-Docker image instaluje přesné verze závislostí z `requirements.lock` (s kontrolními součty). Po změně závislostí v `pyproject.toml` lock vygenerujte znovu:
+Docker image instaluje přesné verze závislostí z `requirements.lock` a nástroj pro sestavení z `requirements-build.lock`, obojí s kontrolními součty. CI používá `requirements-dev.lock`: stejné verze jako image a k tomu zafixované vývojové nástroje. Po změně závislostí v `pyproject.toml` locky vygenerujte znovu (přesný příkaz je i v hlavičce každého souboru):
 
 ```bash
 uv pip compile pyproject.toml --python-version 3.13 --python-platform linux --generate-hashes -o requirements.lock
+uv pip compile pyproject.toml --extra dev --universal --python-version 3.10 -c requirements.lock --generate-hashes -o requirements-dev.lock
 ```
+
+Aktualizace GitHub Actions, základního Docker image a závislostí navrhuje Dependabot (`.github/dependabot.yml`).
 
 ## Bezpečnost
 
-- Agent čte cizí weby, které mohou obsahovat podstrčené pokyny (prompt injection). Proto každý HTTP požadavek schvalujete vy, požadavky na vnitřní a neveřejné adresy jsou zakázané (i přes přesměrování) a model má výslovný pokyn obsah webů brát jen jako data.
+- Agent čte cizí weby, které mohou obsahovat podstrčené pokyny (prompt injection). Proto každý HTTP požadavek schvalujete vy, požadavky na vnitřní a neveřejné adresy jsou zakázané (i přes přesměrování a podvržené DNS) a při přesměrování na jiný server se neposílají přihlašovací hlavičky a model má výslovný pokyn obsah webů brát jen jako data.
 - E-mail jde jen na adresu uloženou u leadu, jedné osobě. Bez terminálu jen schválené návrhy z Airtable.
 - Odhlášení a blokace (tabulka Blokované kontakty) kontroluje kód při ukládání leadu, návrhu i při odeslání, nespoléhá na model.
-- Hodnoty, které vypadají jako tajné (hlavičky `Authorization`, tokeny, hesla), se v auditu i na obrazovce maskují. Řídicí znaky z textů modelu a webů se před výpisem odstraňují, aby nešlo podvrhnout, co schvalujete.
+- Hodnoty, které vypadají jako tajné (hlavičky `Authorization`, tokeny, hesla), se v auditu i na obrazovce maskují. Řídicí a neviditelné znaky (např. obrácení směru textu) z textů modelu a webů se před výpisem nahrazují, aby nešlo podvrhnout, co schvalujete.
 - Klíče jsou jen v `.env`, který není v gitu ani v Docker image. Kontejner běží pod neprivilegovaným uživatelem a nic neukládá.

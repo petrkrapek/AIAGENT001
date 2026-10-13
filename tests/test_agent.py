@@ -35,6 +35,8 @@ class FakeClient:
         # Snapshot the messages: the agent keeps appending to the same list.
         self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
         response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
         yield NS(get_final_message=lambda: response)
 
 
@@ -151,6 +153,15 @@ def test_tool_errors_are_reported_to_model(config):
     assert [r["is_error"] for r in results] == [True, True, True]
 
 
+def test_bug_inside_a_tool_is_not_reported_as_bad_parameters(config):
+    agent, client, _ = make_agent(config, [response("tool_use", tool_use("t1", "list_tasks", {})),
+                                           response("end_turn", text("Hotovo."))])
+    agent.registry.get("list_tasks").handler = lambda: len(None)  # TypeError inside the handler
+    agent.run("úkoly")
+    result = client.calls[1]["messages"][-1]["content"][0]
+    assert result["is_error"] and result["content"].startswith("Chyba při běhu nástroje: TypeError")
+
+
 def test_pause_turn_resumes(config):
     paused = response("pause_turn", NS(type="server_tool_use", name="web_search", input={"query": "x"}))
     agent, client, _ = make_agent(config, [paused, response("end_turn", text("Výsledek."))])
@@ -209,6 +220,53 @@ def test_iteration_limit_after_pause_turn_drops_paused_turn(config):
     agent, _, _ = make_agent(config, [paused])
     agent.run("hledej")
     assert agent.messages[-1]["role"] == "user"
+
+
+def test_paused_turn_is_dropped_when_resuming_fails(config, monkeypatch):
+    import httpx2
+    monkeypatch.setattr("aiagent.agent.STREAM_RETRIES", 0)
+    paused = response("pause_turn", NS(type="server_tool_use", name="web_search", input={"query": "x"}))
+    agent, client, _ = make_agent(config, [paused, httpx2.RemoteProtocolError("spojení ukončeno"),
+                                           response("end_turn", text("Dobře."))])
+    with pytest.raises(httpx2.RemoteProtocolError):
+        agent.run("hledej")
+    assert [m["role"] for m in agent.messages] == ["user"]
+    # The conversation goes on: the next message doesn't follow the paused server-tool turn.
+    agent.run("zkus to znovu")
+    assert [m["role"] for m in client.calls[-1]["messages"]] == ["user", "user"]
+
+
+def test_paused_turn_is_dropped_on_refusal(config):
+    paused = response("pause_turn", NS(type="server_tool_use", name="web_search", input={"query": "x"}))
+    agent, _, events = make_agent(config, [paused, response("refusal")])
+    agent.run("hledej")
+    assert agent.messages == [] and "přeformulovat" in events.notices[-1]
+
+
+def test_dropped_stream_is_retried(config, monkeypatch):
+    import anthropic
+    import httpx2
+    sleeps = []
+    monkeypatch.setattr("aiagent.agent.time.sleep", sleeps.append)
+    overloaded = anthropic.APIStatusError(
+        "Overloaded", response=httpx2.Response(200, request=httpx2.Request("POST", "https://api.anthropic.com")),
+        body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})
+    agent, client, events = make_agent(config, [httpx2.RemoteProtocolError("spojení ukončeno"), overloaded,
+                                                response("end_turn", text("Hotovo."))])
+    assert agent.run("ahoj") == "Hotovo."
+    assert len(client.calls) == 3 and sleeps == [5.0, 10.0]
+    assert "zkouším znovu" in events.notices[0]
+    # Persistent failures and other errors are not retried forever.
+    agent, client, _ = make_agent(config, [httpx2.ReadTimeout("timeout")] * 3)
+    with pytest.raises(httpx2.ReadTimeout):
+        agent.run("ahoj")
+    assert len(client.calls) == 3
+    bad = anthropic.BadRequestError(
+        "bad", response=httpx2.Response(400, request=httpx2.Request("POST", "https://api.anthropic.com")), body=None)
+    agent, client, _ = make_agent(config, [bad])
+    with pytest.raises(anthropic.BadRequestError):
+        agent.run("ahoj")
+    assert len(client.calls) == 1
 
 
 def test_model_specific_features(config):

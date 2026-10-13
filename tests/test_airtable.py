@@ -159,6 +159,31 @@ def test_transport_errors_are_wrapped_and_reads_retried(client):
         assert calls == ["POST"]  # never repeated: it might have been stored already
 
 
+def test_updates_are_retried_but_creates_are_not(http, client):
+    fake = http((503, {}), (200, {"id": "recAAAAAAAAAAAAAA", "fields": {}}))
+    client.update_record("Leady", "recAAAAAAAAAAAAAA", {"Firma": "X"})
+    assert [r["method"] for r in fake.requests] == ["PATCH", "PATCH"]
+    fake = http((503, {}))
+    with pytest.raises(at.AirtableError, match="503"):
+        client.create_record("Leady", {"Firma": "X"})
+    assert len(fake.requests) == 1
+
+
+def test_unreadable_error_body_is_still_an_airtable_error(client):
+    import http.client
+
+    class Body(io.BytesIO):
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"")
+
+    def fail(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 401, "err", {}, Body())
+
+    with mock.patch("aiagent.airtable.urllib.request.urlopen", fail):
+        with pytest.raises(at.AirtableError, match="AIRTABLE_TOKEN"):
+            client.list_records("Leady")
+
+
 def test_rate_limit_waits_30_seconds_also_for_writes(http, client):
     fake = http((429, {}), (200, {"records": [{"id": "recAAAAAAAAAAAAAA", "fields": {}}]}))
     with mock.patch("aiagent.airtable.time.sleep") as sleep:
@@ -394,3 +419,21 @@ def test_blocklist_rows_are_normalized(http, client):
     blocklist.add(blocked_entry("Alfa", "Info@Alfa.cz", None, None, "odhlášení"))
     fields = fake.requests[1]["body"]["records"][0]["fields"]
     assert fields["E-mail"] == "info@alfa.cz" and fields["Doména"] is None and fields["Přidáno"]
+
+
+def test_blocklist_is_cached_briefly(http, client):
+    from aiagent.repos import AirtableBlocklist, blocked_entry
+    fake = http((200, {"records": [{"id": "rec1", "fields": {"Název": "Konkurence", "Doména": "konkurence.cz"}}]}),
+                (200, {"records": [{"id": "rec2", "fields": {}}]}),
+                (200, {"records": []}),
+                (200, {"records": []}))
+    blocklist = AirtableBlocklist(client)
+    assert len(blocklist.entries()) == 1
+    blocklist.add(blocked_entry("Alfa", "info@alfa.cz", None, None))
+    # Served from the cache, including the row this process just added.
+    assert [e["name"] for e in blocklist.entries()] == ["Konkurence", "Alfa"]
+    assert [r["method"] for r in fake.requests] == ["GET", "POST"]
+    blocklist.entries(fresh=True)  # before sending an e-mail: always the current table
+    with mock.patch("aiagent.repos.time.monotonic", return_value=10**9):
+        blocklist.entries()  # the cache expired
+    assert [r["method"] for r in fake.requests] == ["GET", "POST", "GET", "GET"]

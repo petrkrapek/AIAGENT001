@@ -8,17 +8,20 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 from typing import Any
 
 import anthropic
+import httpx2
 
 from . import __version__
-from .agent import Agent, AgentEvents, format_services
+from .agent import Agent, AgentEvents, Approver, format_services
 from .airtable import LEADS, AirtableClient, AirtableError, setup_base
 from .config import EFFORT_LEVELS, SEND_MODES, Config
 from .repos import airtable_repos, redact, sync_blocklist
 from .research import enable_research
 from .tools import ToolError, build_registry
+from .tools.web import url_host
 
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_INTERRUPTED = 0, 1, 2, 130
 
@@ -48,10 +51,16 @@ def red(text: str) -> str:
 # Escape sequences and carriage returns from model output or web pages could rewrite what the
 # terminal shows, e.g. hide the real recipient in an approval prompt.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# Invisible format characters do the same without escape sequences: bidi overrides reorder text,
+# zero-width characters and Unicode tags hide it. The zero-width joiner only joins emoji.
+_INVISIBLE = ("Cf", "Zl", "Zp")
 
 
 def safe(text: str) -> str:
-    return _CONTROL.sub("�", text)
+    text = _CONTROL.sub("�", text)
+    if text.isascii():
+        return text
+    return "".join("�" if ch != "\u200d" and unicodedata.category(ch) in _INVISIBLE else ch for ch in text)
 
 
 def err(text: str) -> None:
@@ -105,13 +114,25 @@ def noninteractive_approver(name: str, tool_input: dict[str, Any]) -> bool:
     return False
 
 
-def auto_approver(name: str, tool_input: dict[str, Any]) -> bool:
-    if name == "send_email":
-        # --yes must not become a way around the approved-draft guard of the auto send mode.
-        print(yellow("! --yes neschvaluje e-maily. Pro odesílání bez dozoru použijte AIAGENT_SEND_MODE=auto."))
-        return False
-    print(yellow(f"! Automaticky schváleno: {name}"))
-    return True
+def auto_approver(allowed_hosts: tuple[str, ...] = ()) -> Approver:
+    """Approver for --yes: approves everything except e-mails and HTTP requests to hosts not allowed."""
+
+    def approve(name: str, tool_input: dict[str, Any]) -> bool:
+        if name == "send_email":
+            # --yes must not become a way around the approved-draft guard of the auto send mode.
+            print(yellow("! --yes neschvaluje e-maily. Pro odesílání bez dozoru použijte AIAGENT_SEND_MODE=auto."))
+            return False
+        if name == "http_request":
+            # A web page read in the same run could ask the model to send data anywhere.
+            host = url_host(str(tool_input.get("url", "")))
+            if host not in allowed_hosts:
+                print(yellow(f"! --yes neschvaluje požadavky na {safe(host) or 'tuto adresu'}. "
+                             "Povolené servery nastavíte v AIAGENT_HTTP_ALLOWED_HOSTS."))
+                return False
+        print(yellow(f"! Automaticky schváleno: {name}"))
+        return True
+
+    return approve
 
 
 HELP = """Příkazy:
@@ -210,8 +231,9 @@ def run_safely(agent: Agent, task: str) -> int:
         err(f"Chyba API ({exc.status_code}): {exc.message} (request id: {exc.request_id})")
     except anthropic.APITimeoutError:
         err("API neodpovědělo včas. Zkuste to znovu, případně snižte AIAGENT_EFFORT.")
-    except anthropic.APIConnectionError:
-        err("Nepodařilo se spojit s API. Zkontrolujte připojení.")
+    except (anthropic.APIConnectionError, httpx2.TransportError):
+        # httpx2: the connection dropped in the middle of a streamed response (after the agent's retries).
+        err("Spojení s API selhalo. Zkontrolujte připojení a zkuste to znovu.")
     except AirtableError as exc:
         err(str(exc))
     except TypeError as exc:
@@ -262,7 +284,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--effort", choices=EFFORT_LEVELS, help="hloubka uvažování")
     parser.add_argument("--show-thinking", action="store_true", help="zobrazovat shrnutí uvažování")
     parser.add_argument("--yes", action="store_true",
-                        help="schvalovat všechny akce kromě odeslání e-mailu automaticky (opatrně!)")
+                        help="schvalovat akce automaticky, kromě odeslání e-mailu a HTTP požadavků "
+                             "na servery mimo AIAGENT_HTTP_ALLOWED_HOSTS (opatrně!)")
     parser.add_argument("--send-mode", choices=SEND_MODES,
                         help="odesílání e-mailů: off = jen návrhy, approve = se schválením, "
                              "auto = jen návrhy schválené v Airtable, bez dotazu")
@@ -359,7 +382,7 @@ def _main(argv: list[str] | None) -> int:
         print(dim(f"Do tabulky Blokované kontakty doplněno kontaktů ve stavu Nekontaktovat: {added}."))
 
     if args.yes:
-        approver = auto_approver
+        approver = auto_approver(config.http_allowed_hosts)
     elif sys.stdin.isatty():
         approver = interactive_approver
     else:

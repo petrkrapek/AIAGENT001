@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import socket
@@ -20,28 +21,93 @@ MAX_RESPONSE_BYTES = 1_000_000
 WEB_FETCH_MAX_CONTENT_TOKENS = 20_000
 
 
+def public_ips(host: str, port: int) -> list[str]:
+    """Addresses of the host; refuses it if any of them is private, loopback or link-local."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ToolError(f"Adresu {host} nelze přeložit.") from exc
+    ips = []
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise ToolError(f"Požadavky na vnitřní nebo neveřejné adresy ({ip}) nejsou povolené.")
+        ips.append(str(ip))
+    return ips
+
+
 def check_public_url(url: str) -> None:
     """Refuse non-HTTP(S) URLs and hosts resolving to private, loopback or link-local addresses."""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ToolError("URL musí začínat http:// nebo https:// a obsahovat adresu serveru.")
-    try:
-        infos = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
-    except socket.gaierror as exc:
-        raise ToolError(f"Adresu {parsed.hostname} nelze přeložit.") from exc
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if not ip.is_global:
-            raise ToolError(f"Požadavky na vnitřní nebo neveřejné adresy ({ip}) nejsou povolené.")
+    public_ips(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+
+
+def _connect_public(address: tuple[str, int], *args: Any) -> socket.socket:
+    """socket.create_connection that connects only to an address it has just checked.
+
+    Checking the URL first and letting the connection resolve the name again would let a DNS
+    server answer with a public address for the check and an internal one for the connection.
+    """
+    host, port = address
+    error: OSError | None = None
+    for ip in public_ips(host, port):
+        try:
+            return socket.create_connection((ip, port), *args)
+        except OSError as exc:
+            error = exc
+    raise error or OSError(f"Nelze se připojit k {host}.")
+
+
+def _public_only(http_class: type[http.client.HTTPConnection]) -> type[http.client.HTTPConnection]:
+    class PublicConnection(http_class):  # type: ignore[valid-type, misc]
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, **kwargs)
+            self._create_connection = _connect_public  # TLS still verifies the certificate for the host name
+
+    return PublicConnection
+
+
+class _PublicOnly:
+    def do_open(self, http_class, req, **kwargs):
+        # Through a proxy, the connection goes to the proxy, which resolves the target itself.
+        if not (req.has_proxy() or req._tunnel_host):
+            http_class = _public_only(http_class)
+        return super().do_open(http_class, req, **kwargs)  # type: ignore[misc]
+
+
+class _PublicHTTPHandler(_PublicOnly, urllib.request.HTTPHandler):
+    pass
+
+
+class _PublicHTTPSHandler(_PublicOnly, urllib.request.HTTPSHandler):
+    pass
+
+
+def url_host(url: str) -> str:
+    return (urllib.parse.urlparse(url).hostname or "").lower()
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urllib.parse.urlparse(url)
+    return parsed.scheme, (parsed.hostname or "").lower(), parsed.port or (443 if parsed.scheme == "https" else 80)
 
 
 class _SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         check_public_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _origin(newurl) != _origin(req.full_url):
+            # urllib copies every header to the new URL; tokens, API keys and cookies the caller set
+            # belong to the original server only (and must not travel over plain http either).
+            for name in list(new.headers):
+                if name.lower() != "user-agent":
+                    del new.headers[name]
+        return new
 
 
-_opener = urllib.request.build_opener(_SafeRedirect)
+_opener = urllib.request.build_opener(_SafeRedirect, _PublicHTTPHandler, _PublicHTTPSHandler)
 
 
 def server_tools() -> list[dict[str, Any]]:

@@ -12,13 +12,13 @@ import time
 from datetime import datetime
 from email import policy
 from email.message import EmailMessage
-from email.utils import formatdate, getaddresses, make_msgid
-from typing import Any
+from email.utils import formatdate, getaddresses, make_msgid, parseaddr
 from zoneinfo import ZoneInfo
 
 from ..config import Config, ImapConfig, SmtpConfig
-from ..repos import describe_blocked, find_blocked, now_iso
+from ..repos import Blocklist, LeadRepo, now_iso
 from . import Tool, ToolError, schema
+from .leads import check_not_blocked
 
 
 def open_smtp(smtp: SmtpConfig) -> smtplib.SMTP:
@@ -129,6 +129,13 @@ def _imap_session(imap: ImapConfig) -> imaplib.IMAP4_SSL:
     return imaplib.IMAP4_SSL(imap.host, imap.port, ssl_context=ssl.create_default_context(), timeout=30)
 
 
+def _imap_error(exc: Exception) -> str:
+    if isinstance(exc, UnicodeError):
+        # imaplib sends the login as ASCII.
+        return "přihlašovací jméno nebo heslo obsahuje znaky mimo ASCII (diakritiku), IMAP je neumí přenést."
+    return str(exc)
+
+
 def save_to_sent(imap: ImapConfig, msg: EmailMessage) -> str:
     """Store a copy of a sent e-mail in the Sent folder; returns the folder name."""
     try:
@@ -139,8 +146,8 @@ def save_to_sent(imap: ImapConfig, msg: EmailMessage) -> str:
                                          msg.as_bytes(policy=policy.SMTP))
             if status != "OK":
                 raise ToolError(f"IMAP server kopii odmítl: {data}")
-    except (imaplib.IMAP4.error, OSError) as exc:
-        raise ToolError(f"IMAP: {exc}") from exc
+    except (imaplib.IMAP4.error, OSError, UnicodeError) as exc:
+        raise ToolError(f"IMAP: {_imap_error(exc)}") from exc
     return decode_folder(folder)
 
 
@@ -149,8 +156,8 @@ def imap_check(imap: ImapConfig) -> str:
         with _imap_session(imap) as server:
             server.login(imap.user, imap.password)
             folder = pick_sent_folder(list_folders(server), imap.folder)
-    except (imaplib.IMAP4.error, OSError) as exc:
-        raise ToolError(f"IMAP nefunguje: {exc}") from exc
+    except (imaplib.IMAP4.error, OSError, UnicodeError) as exc:
+        raise ToolError(f"IMAP nefunguje: {_imap_error(exc)}") from exc
     return (f"Připojení k IMAP {imap.host}:{imap.port} je v pořádku, kopie odeslaných e-mailů se budou ukládat "
             f"do složky {decode_folder(folder)}.")
 
@@ -159,15 +166,18 @@ def imap_check(imap: ImapConfig) -> str:
 
 
 def build_message(smtp: SmtpConfig, to: str, subject: str, body: str, unsubscribe: bool = False) -> EmailMessage:
+    """Raises ValueError for header values email can't encode, e.g. a subject with a line break."""
+    # SMTP_FROM may carry a display name ('Obchod <obchod@firma.cz>'); headers below need the bare address.
+    address = parseaddr(smtp.sender)[1]
     msg = EmailMessage()
     msg["From"] = smtp.sender
     msg["To"] = to
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid(domain=smtp.sender.rsplit("@", 1)[-1] or None)
+    msg["Message-ID"] = make_msgid(domain=address.rpartition("@")[2] or None)
     if unsubscribe:
         # Mail clients show an "unsubscribe" button; the request arrives as a reply to the sender.
-        msg["List-Unsubscribe"] = f"<mailto:{smtp.sender}?subject=Odhlaseni>"
+        msg["List-Unsubscribe"] = f"<mailto:{address}?subject=Odhlaseni>"
     msg.set_content(body)
     return msg
 
@@ -199,7 +209,7 @@ def single_address(value: str) -> str:
     return pairs[0][1].strip().lower()
 
 
-def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
+def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
     smtp = config.smtp
     assert smtp is not None
     auto = config.send_mode == "auto"
@@ -216,6 +226,14 @@ def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
         if remaining > 0:
             time.sleep(remaining)
 
+    def check_sending_hours() -> None:
+        if not within_hours(now_in(config.timezone), config.send_hours):
+            assert config.send_hours is not None
+            raise ToolError(
+                f"Teď je mimo povolenou dobu odesílání ({describe_hours(config.send_hours)}, AIAGENT_SEND_HOURS). "
+                "E-mail neodeslán, návrh zůstává uložený; odešli ho až v povolené době."
+            )
+
     def send_email(lead_id: str, to: str, subject: str, body: str, follow_up: bool = False) -> str:
         lead = repo.get(lead_id)
         address = single_address(to)
@@ -226,9 +244,7 @@ def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
             )
         if lead["status"] in ("do_not_contact", "not_interested") or repo.is_suppressed(address):
             raise ToolError("Tento kontakt si nepřeje být oslovován. E-mail neodeslán.")
-        blocked = find_blocked(blocklist.entries(), address, lead.get("website"), lead.get("ico"))
-        if blocked:
-            raise ToolError(f"Kontakt je v tabulce Blokované kontakty ({describe_blocked(blocked)}). E-mail neodeslán.")
+        check_not_blocked(blocklist, address, lead.get("website"), lead.get("ico"), fresh=True)
         if lead_id in sent_this_session:
             raise ToolError(f"Leadu {lead_id} už byl v tomto běhu e-mail odeslán. Neodesílej znovu.")
         if lead.get("sending_started"):
@@ -255,16 +271,16 @@ def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
                 )
             if (_normalize(draft["subject"]), _normalize(draft["body"])) != (_normalize(subject), _normalize(body)):
                 raise ToolError("Text se liší od schváleného návrhu. Odeslat lze jen schválený text beze změn.")
-        now = now_in(config.timezone)
-        if not within_hours(now, config.send_hours):
-            assert config.send_hours is not None
-            raise ToolError(
-                f"Teď je mimo povolenou dobu odesílání ({describe_hours(config.send_hours)}, AIAGENT_SEND_HOURS). "
-                "E-mail neodeslán, návrh zůstává uložený; odešli ho až v povolené době."
-            )
-        if max(repo.sent_count(now.date().isoformat()), sent_count["n"]) >= config.daily_email_limit:
+        check_sending_hours()
+        today = now_in(config.timezone).date().isoformat()
+        if max(repo.sent_count(today), sent_count["n"]) >= config.daily_email_limit:
             raise ToolError(f"Dosažen denní limit {config.daily_email_limit} odeslaných e-mailů.")
+        try:
+            message = build_message(smtp, address, subject, body, unsubscribe=True)
+        except ValueError as exc:
+            raise ToolError(f"E-mail nelze sestavit: {exc}. Předmět musí být na jednom řádku.") from exc
         pause_between_emails()
+        check_sending_hours()  # the pause may have run past the end of the window
 
         # Mark the lead before sending: if the outcome can't be recorded afterwards (Airtable down,
         # crash), the mark keeps later runs from sending the same e-mail again.
@@ -273,12 +289,12 @@ def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
         except Exception as exc:
             raise ToolError(f"E-mail neodeslán: nepodařilo se zapsat zahájení odesílání do Airtable ({exc}).") \
                 from exc
-        message = build_message(smtp, address, subject, body, unsubscribe=True)
         try:
             deliver(smtp, message)
         except DeliveryError as exc:
             if exc.maybe_sent:
                 sent_this_session.add(lead_id)
+                sent_count["n"] += 1  # probably delivered: count it toward the daily limit
                 last_send["at"] = time.monotonic()
                 raise ToolError(
                     f"{exc} Není jisté, že e-mail neodešel, proto lead zůstává zablokovaný (pole Odesílání "
@@ -293,26 +309,27 @@ def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
         sent_count["n"] += 1
         last_send["at"] = time.monotonic()
 
-        copy_note = ""
-        if config.imap is not None:
-            try:
-                save_to_sent(config.imap, message)
-            except ToolError as exc:
-                copy_note = f" Kopii do složky Odeslané se nepodařilo uložit ({exc})."
-
         sent_at = now_iso()
         try:
             # The e-mail record first: the lead's mark is cleared only once everything is stored.
             repo.add_email(lead_id, address, subject, body, sent_at)
             repo.update(lead_id, {"status": "contacted", "last_contacted": sent_at, "draft": None,
                                   "sending_started": None})
+            result = f"E-mail '{subject}' odeslán na {address}; lead {lead_id} je ve stavu contacted."
         except Exception as exc:
-            return (
+            result = (
                 f"E-mail BYL odeslán na {address}, ale zápis do Airtable selhal ({exc}). Neodesílej ho "
                 "znovu (lead zůstává zablokovaný polem Odesílání zahájeno); upozorni uživatele, ať odeslání "
                 "zapíše ručně (stav Osloven, tabulka E-maily) a pole Odesílání zahájeno vymaže."
-            ) + copy_note
-        return f"E-mail '{subject}' odeslán na {address}; lead {lead_id} je ve stavu contacted.{copy_note}"
+            )
+
+        # Only after the record: the copy is a convenience and must never keep the send from being stored.
+        if config.imap is not None:
+            try:
+                save_to_sent(config.imap, message)
+            except Exception as exc:
+                result += f" Kopii do složky Odeslané se nepodařilo uložit ({exc})."
+        return result
 
     if auto:
         approval_note = (

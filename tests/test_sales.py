@@ -67,6 +67,17 @@ def test_no_draft_for_do_not_contact(registry):
         call(registry, "save_draft", id="rec00000000000001", subject="x", body="y")
 
 
+def test_list_leads_shows_the_newest(registry, repos, monkeypatch):
+    from aiagent.tools import leads
+    monkeypatch.setattr(leads, "LIST_LIMIT", 3)
+    for n in range(1, 6):
+        repos.leads.create({"company": f"Firma {n}", "status": "new"})
+    out = call(registry, "list_leads")
+    assert [line.split("] ")[1] for line in out.splitlines() if line.startswith("rec")] == \
+        ["Firma 5", "Firma 4", "Firma 3"]
+    assert "new 5" in out and "Zobrazeno 3 nejnovějších" in out
+
+
 def test_list_leads_filters(registry):
     add_lead(registry, city="Brno")
     add_lead(registry, company="Beta", ico="2", website="beta.cz", email=None, city="Praha", status="new")
@@ -133,6 +144,38 @@ def test_freemail_domain_is_not_a_company(registry):
     out = add_lead(registry, company="Řezník", ico="8", website=None, email="reznik@seznam.cz",
                    email_source="https://reznik.cz")
     assert out.startswith("Uloženo")
+
+
+def test_profile_sites_are_not_a_company(registry, repos):
+    add_lead(registry, company="Alfa", ico="7", website="https://www.facebook.com/alfa", email=None)
+    # A different company with only a Facebook page (or a firmy.cz listing) is not a duplicate.
+    for n, website in enumerate(("facebook.com/beta", "m.facebook.com/gama", "https://www.firmy.cz/detail/1"), 8):
+        assert add_lead(registry, company=f"Firma {n}", ico=str(n), website=website, email=None).startswith("Uloženo")
+    # Without its own website the company is still recognized by its company mailbox.
+    add_lead(registry, company="Delta", ico="20", website="facebook.com/delta", email="info@delta.cz")
+    assert repos.leads.get(rid(5))["domain"] == "delta.cz"
+    assert "už existuje" in add_lead(registry, company="Delta 2", ico="21", website="https://delta.cz",
+                                     email=None)
+
+
+def test_opt_out_on_shared_sites_blocks_only_that_company(registry, repos):
+    add_lead(registry, company="Alfa", ico="7", website="facebook.com/alfa", email=None, status="do_not_contact")
+    assert [r["domain"] for r in repos.blocklist.rows] == [""]
+    assert add_lead(registry, company="Beta", ico="8", website="facebook.com/beta", email=None).startswith("Uloženo")
+    # A row a person typed for a free-mail or profile site blocks only exact matches, not everyone there.
+    repos.blocklist.block(name="Seznam.cz", domain="seznam.cz", reason="stávající zákazník")
+    repos.blocklist.block(name="Omyl", domain="facebook.com")
+    assert add_lead(registry, company="Gama", ico="9", website="facebook.com/gama",
+                    email="gama@seznam.cz").startswith("Uloženo")
+    with pytest.raises(ToolError, match="Seznam.cz"):
+        add_lead(registry, company="Seznam", ico="10", website="https://www.seznam.cz", email=None)
+
+
+def test_opt_out_without_identifiers_is_not_copied_again(repos):
+    from aiagent.repos import sync_blocklist
+    repos.leads.create({"company": "Jen název", "status": "do_not_contact"})
+    assert sync_blocklist(repos.leads, repos.blocklist) == 0
+    assert sync_blocklist(repos.leads, repos.blocklist) == 0 and repos.blocklist.rows == []
 
 
 def test_ico_is_normalized_for_duplicates(registry):
@@ -218,6 +261,30 @@ def test_ambiguous_send_keeps_the_lead_blocked(smtp_config, repos, fake_smtp):
     assert fake_smtp.send_message.call_count == 1
 
 
+def test_unbuildable_message_leaves_no_mark(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with pytest.raises(ToolError, match="jednom řádku"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="Nabídka\nspolupráce", body="y")
+    fake_smtp.send_message.assert_not_called()
+    assert repos.leads.get(rid(1))["sending_started"] is None
+    assert "odeslán" in call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="Nabídka", body="y")
+
+
+def test_ambiguous_send_counts_toward_daily_limit(smtp_config, repos, fake_smtp):
+    import smtplib
+    smtp_config.daily_email_limit = 1
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    add_lead(registry, company="Beta", ico="2", website="beta.cz", email="a@beta.cz")
+    fake_smtp.send_message.side_effect = smtplib.SMTPServerDisconnected("spojení ukončeno")
+    with pytest.raises(ToolError, match="Odeslané"):
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    fake_smtp.send_message.side_effect = None
+    with pytest.raises(ToolError, match="limit"):
+        call(registry, "send_email", lead_id=rid(2), to="a@beta.cz", subject="x", body="y")
+
+
 def test_failing_quit_after_accepted_message_counts_as_sent(smtp_config, repos):
     import smtplib
     registry = build_registry(smtp_config, repos)
@@ -270,6 +337,14 @@ def test_opt_out_survives_deleting_the_lead(smtp_config, repos, fake_smtp):
     fake_smtp.send_message.assert_not_called()
     call(registry, "update_lead", id=rid(2), status="do_not_contact")
     assert len(repos.blocklist.rows) == 1  # already covered by the company domain
+
+
+def test_send_checks_the_current_blocklist(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with mock.patch.object(repos.blocklist, "entries", wraps=repos.blocklist.entries) as entries:
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    entries.assert_called_once_with(fresh=True)
 
 
 def test_freemail_opt_out_blocks_only_that_address(registry, repos):
@@ -338,6 +413,49 @@ def test_ares_company_validates_ico(registry):
     with mock.patch.object(ares, "_request", return_value={"ico": "00000123", "obchodniJmeno": "X"}) as req:
         call(registry, "ares_company", ico="123")
     assert req.call_args[0][0].endswith("/00000123")
+
+
+def _ares_reply(status, body=b'{"ico": "00000123", "obchodniJmeno": "X"}'):
+    import io
+    import urllib.error
+    if status >= 400:
+        return urllib.error.HTTPError("https://ares", status, "err", {}, io.BytesIO(body))
+    return mock.MagicMock(__enter__=lambda s: mock.MagicMock(read=lambda: body), __exit__=lambda *a: False)
+
+
+def test_ares_retries_transient_failures(registry):
+    import http.client
+    replies = [TimeoutError("read timed out"), _ares_reply(503), http.client.RemoteDisconnected("x"), _ares_reply(200)]
+    replies_left = list(replies)
+
+    def urlopen(request, timeout=None):
+        reply = replies_left.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    with mock.patch.object(ares.urllib.request, "urlopen", urlopen), mock.patch.object(ares.time, "sleep") as sleep:
+        with pytest.raises(ToolError, match="nedostupný"):  # three attempts, all failing
+            call(registry, "ares_company", ico="123")
+        assert sleep.call_count == 2
+        assert "IČO 00000123" in call(registry, "ares_company", ico="123")
+
+
+def test_ares_errors_become_tool_errors(registry):
+    def urlopen_with(reply):
+        return lambda request, timeout=None: reply
+
+    with mock.patch.object(ares.time, "sleep"):
+        with mock.patch.object(ares.urllib.request, "urlopen", urlopen_with(_ares_reply(200, b"<html>"))):
+            with pytest.raises(ToolError, match="neplatnou odpověď"):
+                call(registry, "ares_company", ico="123")
+        with mock.patch.object(ares.urllib.request, "urlopen", side_effect=_ares_reply(404, b"{}")):
+            with pytest.raises(ToolError, match="nenalezen"):
+                call(registry, "ares_company", ico="123")
+        bad_query = _ares_reply(400, '{"popis": "Chybný dotaz"}'.encode())
+        with mock.patch.object(ares.urllib.request, "urlopen", side_effect=bad_query):
+            with pytest.raises(ToolError, match="400. Chybný dotaz"):
+                call(registry, "ares_search", name="x")
 
 
 # --- system prompt ----------------------------------------------------------------

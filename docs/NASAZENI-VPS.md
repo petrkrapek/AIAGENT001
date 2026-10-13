@@ -320,16 +320,16 @@ Na konec souboru přidejte například:
 
 ```cron
 # Každý pracovní den v 7:50 najdi nové firmy a připrav návrhy
-50 7 * * 1-5  cd $HOME/AIAGENT001 && /usr/bin/docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav jim návrhy." >> $HOME/aiagent.log 2>&1
+50 7 * * 1-5  cd $HOME/AIAGENT001 && flock -n /tmp/aiagent.lock /usr/bin/docker compose run --rm -T agent run "Najdi 5 nových firem podle profilu a připrav jim návrhy." >> $HOME/aiagent.log 2>&1
 ```
 
-Bez terminálu (`-T`) agent nic neschvaluje. V režimu `approve` tedy jen připraví návrhy a odeslat je můžete později v chatu.
+`flock -n /tmp/aiagent.lock` spustí agenta jen tehdy, když zrovna neběží jiná úloha se stejným zámkem; souběžné běhy by si mohly přetahovat denní limit e-mailů. Bez terminálu (`-T`) agent nic neschvaluje. V režimu `approve` tedy jen připraví návrhy a odeslat je můžete později v chatu.
 
 Odesílání bez dozoru: nastavte v `.env` hodnotu `AIAGENT_SEND_MODE=auto` a přidejte druhou úlohu:
 
 ```cron
 # Ve 14:50 odešli návrhy, které jsem během dne schválil v Airtable
-50 14 * * 1-5  cd $HOME/AIAGENT001 && /usr/bin/docker compose run --rm -T agent run "Odešli všechny návrhy schválené v Airtable." >> $HOME/aiagent.log 2>&1
+50 14 * * 1-5  cd $HOME/AIAGENT001 && flock -n /tmp/aiagent.lock /usr/bin/docker compose run --rm -T agent run "Odešli všechny návrhy schválené v Airtable." >> $HOME/aiagent.log 2>&1
 ```
 
 V režimu `auto` agent odešle jen návrhy, u kterých jste v Airtable přepnuli pole **Schválení návrhu** na **Schváleno**, a to beze změny textu.

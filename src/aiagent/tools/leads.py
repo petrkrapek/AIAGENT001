@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import Config
-from ..repos import block_lead, describe_blocked, find_blocked, now_iso
+from ..repos import Blocklist, LeadRepo, block_lead, describe_blocked, find_blocked, now_iso
 from . import Tool, ToolError, schema, truncate
 
 STATUSES = (
@@ -18,6 +18,9 @@ STATUSES = (
     "not_interested",
     "do_not_contact",  # never contact again (opt-out)
 )
+
+# Leads per list_leads call, newest first: keeps the result well within the tool-result size limit.
+LIST_LIMIT = 100
 
 EDITABLE = (
     "company", "ico", "website", "email", "email_source", "contact_name", "contact_role",
@@ -52,8 +55,9 @@ def _check_service(service_id: str | None) -> None:
         raise ToolError("service_id je ID služby z tabulky Služby (začíná 'rec'), viz přehled služeb.")
 
 
-def check_not_blocked(blocklist: Any, email: str | None, website: str | None, ico: str | None) -> None:
-    entry = find_blocked(blocklist.entries(), email, website, ico)
+def check_not_blocked(blocklist: Blocklist, email: str | None, website: str | None, ico: str | None,
+                      fresh: bool = False) -> None:
+    entry = find_blocked(blocklist.entries(fresh=fresh), email, website, ico)
     if entry:
         raise ToolError(
             f"Firma nebo kontakt je v tabulce Blokované kontakty ({describe_blocked(entry)}). "
@@ -61,7 +65,7 @@ def check_not_blocked(blocklist: Any, email: str | None, website: str | None, ic
         )
 
 
-def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
+def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
     def record_opt_out(lead: dict[str, Any]) -> str:
         """Copy an opt-out to the blocklist, so it survives deleting the lead in Airtable."""
         try:
@@ -107,11 +111,15 @@ def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
     def list_leads(status: str | None = None, query: str | None = None) -> str:
         if status is not None and status not in STATUSES:
             raise ToolError(f"Neplatný stav '{status}'.")
-        leads = repo.search(status=status, query=query)
+        leads = repo.search(status=status, query=query, limit=LIST_LIMIT + 1)
         if not leads:
             return "Žádné leady."
         counts = repo.status_counts()
         header = "Celkem podle stavu: " + ", ".join(f"{k} {v}" for k, v in counts.items())
+        if len(leads) > LIST_LIMIT:
+            leads = leads[:LIST_LIMIT]
+            header += (f"\nZobrazeno {LIST_LIMIT} nejnovějších. Starší najdeš upřesněním (query: název, "
+                       "město, e-mail, web), duplicity save_lead hlídá sám.")
         return truncate(header + "\n" + "\n".join(format_lead(lead) for lead in leads))
 
     def get_lead(id: str) -> str:

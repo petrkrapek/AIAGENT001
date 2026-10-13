@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -43,6 +44,15 @@ FREEMAIL = {
     "gmail.com", "googlemail.com", "seznam.cz", "email.cz", "post.cz", "centrum.cz", "atlas.cz",
     "volny.cz", "tiscali.cz", "quick.cz", "outlook.com", "hotmail.com", "live.com", "yahoo.com",
     "icloud.com", "me.com", "gmx.com", "gmx.net", "proton.me", "protonmail.com",
+}
+
+# Sites where companies only have a profile page (facebook.com/alfa, firmy.cz/detail/…), and their
+# subdomains: the host says nothing about which company it is.
+PROFILE_SITES = {
+    "facebook.com", "fb.com", "instagram.com", "linkedin.com", "x.com", "twitter.com", "youtube.com",
+    "youtu.be", "tiktok.com", "pinterest.com", "google.com", "goo.gl", "linktr.ee", "wa.me", "t.me",
+    "firmy.cz", "mapy.cz", "mapy.com", "zivefirmy.cz", "najisto.centrum.cz", "kurzy.cz", "justice.cz",
+    "ares.gov.cz", "heureka.cz", "zbozi.cz",
 }
 
 PROFILE_FIELDS = (
@@ -80,13 +90,21 @@ def domain(url_or_email: str | None) -> str:
     return host.strip(" >.").removeprefix("www.")
 
 
-def company_domain(website: str | None, email: str | None) -> str:
-    """Domain identifying the company: from its website, else from a non-freemail address."""
+def site_domain(website: str | None) -> str:
+    """Domain of the company's own website; empty for a profile on a shared site (facebook.com/alfa)."""
     host = domain(website)
-    if host:
-        return host
+    return "" if any(host == site or host.endswith("." + site) for site in PROFILE_SITES) else host
+
+
+def mail_domain(email: str | None) -> str:
+    """Domain of a company mailbox; empty for free-mail providers (seznam.cz, gmail.com…)."""
     host = domain(email)
     return "" if host in FREEMAIL else host
+
+
+def company_domain(website: str | None, email: str | None) -> str:
+    """Domain identifying the company: from its own website, else from a company (non-freemail) address."""
+    return site_domain(website) or mail_domain(email)
 
 
 def normalize_ico(ico: str | None) -> str | None:
@@ -192,7 +210,7 @@ class AirtableLeads:
         except at.AirtableError as exc:
             raise _not_found(exc, f"Lead {lead_id}") from exc
 
-    def find_duplicate(self, ico: str | None, email: str | None, website: str | None):
+    def find_duplicate(self, ico: str | None, email: str | None, website: str | None) -> dict[str, Any] | None:
         clauses = []
         normalized_ico = normalize_ico(ico)
         if normalized_ico:
@@ -219,7 +237,9 @@ class AirtableLeads:
         )
         return bool(self.client.list_records(at.LEADS, formula, fields=["Firma"], max_records=1))
 
-    def search(self, status: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
+    def search(self, status: str | None = None, query: str | None = None,
+               limit: int | None = None) -> list[dict[str, Any]]:
+        """Matching leads, newest first; at most `limit` of them."""
         clauses = []
         if status:
             clauses.append(f"{{Stav}} = {at.esc(at.LEAD_STATUS_LABELS[status])}")
@@ -227,7 +247,7 @@ class AirtableLeads:
             haystack = " & ' ' & ".join(f"{{{LEAD_FIELDS[k]}}}" for k in SEARCH_FIELDS)
             clauses.append(f"SEARCH({at.esc(query.lower())}, LOWER({haystack}))")
         formula = f"AND({', '.join(clauses)})" if clauses else None
-        records = self.client.list_records(at.LEADS, formula, sort=[("Vytvořeno", "asc")])
+        records = self.client.list_records(at.LEADS, formula, sort=[("Vytvořeno", "desc")], max_records=limit)
         return [_lead_from_record(r) for r in records]
 
     def status_counts(self) -> dict[str, int]:
@@ -370,7 +390,9 @@ def find_blocked(entries: list[dict[str, Any]], email: str | None = None, websit
                  ico: str | None = None) -> dict[str, Any] | None:
     """The blocklist entry matching the e-mail, the company's domain (or a subdomain) or the IČO."""
     email = (email or "").strip().lower()
-    hosts = {host for host in (domain(email), domain(website)) if host}
+    # Only domains that identify one company: a row for seznam.cz or facebook.com must not block
+    # everyone with a mailbox or a profile there.
+    hosts = {host for host in (mail_domain(email), site_domain(website)) if host}
     ico = normalize_ico(ico)
     for entry in entries:
         if (email and entry["email"] == email) or (ico and entry["ico"] == ico):
@@ -385,7 +407,7 @@ def describe_blocked(entry: dict[str, Any]) -> str:
     return f"{label}: {entry['reason']}" if entry["reason"] else label
 
 
-def block_lead(blocklist: Any, lead: dict[str, Any], entries: list[dict[str, Any]] | None = None) -> bool:
+def block_lead(blocklist: Blocklist, lead: dict[str, Any], entries: list[dict[str, Any]] | None = None) -> bool:
     """Copy an opted-out lead to the blocklist unless it's already covered; True if a row was added."""
     entries = blocklist.entries() if entries is None else entries
     if find_blocked(entries, lead.get("email"), lead.get("website"), lead.get("ico")):
@@ -393,43 +415,105 @@ def block_lead(blocklist: Any, lead: dict[str, Any], entries: list[dict[str, Any
     entry = blocked_entry(lead.get("company"), lead.get("email"),
                           company_domain(lead.get("website"), lead.get("email")), lead.get("ico"),
                           f"Stav Nekontaktovat (lead {lead['id']})")
+    if not (entry["email"] or entry["domain"] or entry["ico"]):
+        return False  # nothing a row could ever match; it would only be added again on every start
     blocklist.add(entry)
     entries.append(entry)
     return True
 
 
-def sync_blocklist(leads: Any, blocklist: Any) -> int:
+def sync_blocklist(leads: LeadRepo, blocklist: Blocklist) -> int:
     """Copy do_not_contact leads (also ones set by hand in Airtable) to the blocklist; returns the count."""
     entries = blocklist.entries()
     return sum(block_lead(blocklist, lead, entries) for lead in leads.search(status="do_not_contact"))
 
 
 class AirtableBlocklist:
+    # Every saved lead and draft is checked against the whole table: keep it for a short while
+    # instead of downloading it each time. Rows a person adds in Airtable count within a minute.
+    CACHE_SECONDS = 60
+
     def __init__(self, client: at.AirtableClient):
         self.client = client
+        self._cache: tuple[float, list[dict[str, Any]]] | None = None
 
-    def entries(self) -> list[dict[str, Any]]:
+    def entries(self, fresh: bool = False) -> list[dict[str, Any]]:
+        """All rows, normalized; `fresh` skips the cache (before sending an e-mail)."""
+        if not fresh and self._cache and time.monotonic() - self._cache[0] < self.CACHE_SECONDS:
+            return list(self._cache[1])
         records = self.client.list_records(at.BLOCKED, fields=["Název", "E-mail", "Doména", "IČO", "Důvod"])
-        return [
+        entries = [
             blocked_entry(f.get("Název"), f.get("E-mail"), f.get("Doména"), f.get("IČO"), f.get("Důvod"))
             for f in (r.get("fields", {}) for r in records)
         ]
+        self._cache = (time.monotonic(), entries)
+        return list(entries)
 
     def add(self, entry: dict[str, Any]) -> None:
         self.client.create_record(at.BLOCKED, {
             "Název": entry["name"] or None, "E-mail": entry["email"] or None, "Doména": entry["domain"] or None,
             "IČO": entry["ico"], "Důvod": entry["reason"] or None, "Přidáno": now_iso(),
         })
+        if self._cache:
+            self._cache[1].append(entry)
+
+
+# --- interfaces ----------------------------------------------------------------------------
+# What the tools and the agent need from storage. The Airtable classes above implement them, and
+# so do the in-memory doubles in tests/memory_repos.py (tests/test_repos_protocols.py checks it).
+
+
+@runtime_checkable
+class LeadRepo(Protocol):
+    def create(self, lead: dict[str, Any]) -> dict[str, Any]: ...
+    def get(self, lead_id: str) -> dict[str, Any]: ...
+    def update(self, lead_id: str, changes: dict[str, Any]) -> dict[str, Any]: ...
+    def find_duplicate(self, ico: str | None, email: str | None, website: str | None) -> dict[str, Any] | None: ...
+    def is_suppressed(self, email: str) -> bool: ...
+    def search(self, status: str | None = None, query: str | None = None,
+               limit: int | None = None) -> list[dict[str, Any]]: ...
+    def status_counts(self) -> dict[str, int]: ...
+    def add_email(self, lead_id: str, to: str, subject: str, body: str, sent_at: str) -> None: ...
+    def emails(self, lead_id: str) -> list[dict[str, Any]]: ...
+    def sent_count(self, day: str) -> int: ...
+
+
+@runtime_checkable
+class TaskRepo(Protocol):
+    def create(self, title: str, due: str | None, notes: str | None) -> dict[str, Any]: ...
+    def list(self, status: str | None = None) -> list[dict[str, Any]]: ...
+    def update(self, task_id: str, changes: dict[str, Any]) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class AuditLog(Protocol):
+    def log(self, tool: str, tool_input: dict[str, Any], approved: bool | None, is_error: bool) -> None: ...
+
+
+@runtime_checkable
+class ServiceRepo(Protocol):
+    def list_active(self) -> list[dict[str, Any]]: ...
+
+
+@runtime_checkable
+class ProfileRepo(Protocol):
+    def load(self) -> str | None: ...
+
+
+@runtime_checkable
+class Blocklist(Protocol):
+    def entries(self, fresh: bool = False) -> list[dict[str, Any]]: ...
+    def add(self, entry: dict[str, Any]) -> None: ...
 
 
 @dataclass
 class Repos:
-    leads: Any
-    tasks: Any
-    audit: Any
-    services: Any
-    profile: Any
-    blocklist: Any
+    leads: LeadRepo
+    tasks: TaskRepo
+    audit: AuditLog
+    services: ServiceRepo
+    profile: ProfileRepo
+    blocklist: Blocklist
 
 
 def airtable_repos(client: at.AirtableClient, tz: str) -> Repos:
