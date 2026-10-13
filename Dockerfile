@@ -10,13 +10,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencies first, from the hashed lock file: this layer is reused until the lock changes.
-COPY requirements.lock ./
-RUN pip install --require-hashes -r requirements.lock
+# Dependencies first, from the hashed lock files: this layer is reused until a lock changes.
+# The build backend is locked too, so nothing unpinned is downloaded while building the agent.
+COPY requirements.lock requirements-build.lock ./
+RUN pip install --require-hashes -r requirements.lock -r requirements-build.lock
 
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-deps . && rm -rf /app/src /app/build
+RUN pip install --no-deps --no-build-isolation . \
+    && pip uninstall -y setuptools \
+    && rm -rf /app/src /app/build
 
 # Unprivileged user. Everything is stored in Airtable, the container keeps no state.
 RUN useradd --uid 1000 --no-create-home agent

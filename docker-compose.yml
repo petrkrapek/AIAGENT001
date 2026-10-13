@@ -7,4 +7,13 @@ services:
     init: true
     stdin_open: true
     tty: true
+    # The agent writes nothing to disk: read-only filesystem, no extra privileges, bounded memory.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
     # No volumes: profile, services and all data live in Airtable; configuration comes from .env.
