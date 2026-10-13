@@ -106,9 +106,38 @@ def test_redirect_to_another_server_drops_credentials(monkeypatch):
         assert new.header_items() == [("User-agent", "aiagent/1")], newurl
 
 
+def test_http_request_connects_only_to_the_checked_address(monkeypatch):
+    import socket
+    import urllib.request
+
+    from aiagent.tools import web
+    answers = [[("93.184.215.14", 80)], [("127.0.0.1", 80)]]  # DNS rebinding: public, then internal
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", addr) for addr in answers.pop(0)]
+
+    monkeypatch.setattr(web.socket, "getaddrinfo", getaddrinfo)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), web._PublicHTTPHandler)
+    web.check_public_url("http://rebind.example/")
+    with pytest.raises(ToolError, match="127.0.0.1"):
+        opener.open("http://rebind.example/", timeout=5)
+
+    connected = []
+    answers[:] = [[("93.184.215.14", 80)]]
+    monkeypatch.setattr(web.socket, "create_connection",
+                        lambda address, *args: connected.append(address) or (_ for _ in ()).throw(OSError("x")))
+    with pytest.raises(OSError):
+        opener.open("http://rebind.example/", timeout=5)
+    assert connected == [("93.184.215.14", 80)]  # the checked address, not the name resolved again
+
+
 def test_console_output_is_sanitized():
     from aiagent.cli import _short, safe
     assert "\x1b" not in safe("ok\x1b[2K\rto: jiny@x.cz")
+    # Bidi overrides, zero-width characters and Unicode tags can't hide or reorder text.
+    for hidden in ("\u202e", "\u2066", "\u200b", "\ufeff", "\U000e0041", "\u2028"):
+        assert safe(f"info@alfa{hidden}.cz") == "info@alfa�.cz"
+    assert safe("Dobrý den 👨‍👩‍👧 ✓") == "Dobrý den 👨‍👩‍👧 ✓"
     assert "\x1b" not in _short({"body": "a\x1b[1A"})
     assert _short({"headers": {"Authorization": "Bearer tajne"}}) == '{"headers": {"Authorization": "***"}}'
 

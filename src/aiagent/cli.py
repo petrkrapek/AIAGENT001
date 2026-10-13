@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sys
+import unicodedata
 from typing import Any
 
 import anthropic
@@ -50,10 +51,16 @@ def red(text: str) -> str:
 # Escape sequences and carriage returns from model output or web pages could rewrite what the
 # terminal shows, e.g. hide the real recipient in an approval prompt.
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# Invisible format characters do the same without escape sequences: bidi overrides reorder text,
+# zero-width characters and Unicode tags hide it. The zero-width joiner only joins emoji.
+_INVISIBLE = ("Cf", "Zl", "Zp")
 
 
 def safe(text: str) -> str:
-    return _CONTROL.sub("�", text)
+    text = _CONTROL.sub("�", text)
+    if text.isascii():
+        return text
+    return "".join("�" if ch != "\u200d" and unicodedata.category(ch) in _INVISIBLE else ch for ch in text)
 
 
 def err(text: str) -> None:
