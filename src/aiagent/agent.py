@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections.abc import Callable
@@ -514,14 +515,7 @@ class Agent:
             result, is_error, approved = "Uživatel tuto akci zamítl.", True, False
         else:
             approved = True if tool.requires_approval(tool_input) else None
-            try:
-                result, is_error = tool.handler(**tool_input), False
-            except ToolError as exc:
-                result, is_error = str(exc), True
-            except TypeError as exc:
-                result, is_error = f"Neplatné parametry nástroje: {exc}", True
-            except Exception as exc:  # report unexpected failures to the model
-                result, is_error = f"Chyba při běhu nástroje: {type(exc).__name__}: {exc}", True
+            result, is_error = _call_handler(tool.handler, tool_input)
         self.events.on_tool_result(name, result, is_error)
         self._audit(name, tool_input, approved, is_error)
         return result, is_error
@@ -533,6 +527,21 @@ class Agent:
             self.audit.log(name, tool_input, approved, is_error)
         except Exception as exc:  # auditing must never break the agent
             self.events.on_notice(f"Zápis do auditu selhal: {exc}")
+
+
+def _call_handler(handler: Callable[..., str], tool_input: dict[str, Any]) -> tuple[str, bool]:
+    try:
+        # Check the arguments first: a TypeError raised inside the handler is a bug, not bad input.
+        inspect.signature(handler).bind(**tool_input)
+    except TypeError as exc:
+        return f"Neplatné parametry nástroje: {exc}", True
+    try:
+        return handler(**tool_input), False
+    except ToolError as exc:
+        return str(exc), True
+    except Exception as exc:  # report unexpected failures to the model
+        log.info("tool handler failed", exc_info=True)  # AIAGENT_LOG_LEVEL=INFO shows the traceback
+        return f"Chyba při běhu nástroje: {type(exc).__name__}: {exc}", True
 
 
 def _tool_result(tool_use_id: str, content: str, is_error: bool) -> dict[str, Any]:

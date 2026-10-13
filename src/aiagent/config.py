@@ -42,6 +42,12 @@ def _range(name: str, default: tuple[int, int] | None, low: int, high: int) -> t
     return start, end
 
 
+def _pause() -> tuple[int, int]:
+    pause = _range("AIAGENT_SEND_PAUSE", (30, 90), 0, 3600)
+    assert pause is not None  # _range returns the default for an empty value
+    return pause
+
+
 def _context_trigger() -> int:
     value = _int("AIAGENT_CONTEXT_TRIGGER", 60_000, 0, 1_000_000)
     if 0 < value < 20_000:
@@ -169,7 +175,7 @@ class Config:
                 folder=(os.environ.get("IMAP_SENT_FOLDER") or "").strip(),
             )
 
-        send_mode = (os.environ.get("AIAGENT_SEND_MODE") or ("approve" if smtp else "off")).lower()
+        send_mode = ((os.environ.get("AIAGENT_SEND_MODE") or "").strip() or ("approve" if smtp else "off")).lower()
 
         return cls(
             model=os.environ.get("AIAGENT_MODEL") or "claude-opus-5-5",
@@ -182,7 +188,7 @@ class Config:
             airtable_base_id=(os.environ.get("AIRTABLE_BASE_ID") or "").strip(),
             send_mode=send_mode,
             daily_email_limit=_int("AIAGENT_DAILY_EMAIL_LIMIT", 20, 0, 10_000),
-            send_pause=_range("AIAGENT_SEND_PAUSE", (30, 90), 0, 3600) or (0, 0),
+            send_pause=_pause(),
             send_hours=_range("AIAGENT_SEND_HOURS", None, 0, 24),
             context_trigger=_context_trigger(),
             subagents=_flag("AIAGENT_SUBAGENTS", True),

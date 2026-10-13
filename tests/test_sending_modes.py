@@ -29,6 +29,11 @@ def test_send_mode_defaults(clean_env):
     assert config.send_mode == "approve" and config.smtp.security == "starttls"
 
 
+def test_send_mode_ignores_whitespace(clean_env):
+    clean_env.setenv("AIAGENT_SEND_MODE", " off ")
+    assert Config.from_env().send_mode == "off"
+
+
 def test_port_465_uses_ssl(clean_env):
     for key, value in {**SMTP_ENV, "SMTP_PORT": "465"}.items():
         clean_env.setenv(key, value)

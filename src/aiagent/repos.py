@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -428,21 +429,33 @@ def sync_blocklist(leads: Any, blocklist: Any) -> int:
 
 
 class AirtableBlocklist:
+    # Every saved lead and draft is checked against the whole table: keep it for a short while
+    # instead of downloading it each time. Rows a person adds in Airtable count within a minute.
+    CACHE_SECONDS = 60
+
     def __init__(self, client: at.AirtableClient):
         self.client = client
+        self._cache: tuple[float, list[dict[str, Any]]] | None = None
 
-    def entries(self) -> list[dict[str, Any]]:
+    def entries(self, fresh: bool = False) -> list[dict[str, Any]]:
+        """All rows, normalized; `fresh` skips the cache (before sending an e-mail)."""
+        if not fresh and self._cache and time.monotonic() - self._cache[0] < self.CACHE_SECONDS:
+            return list(self._cache[1])
         records = self.client.list_records(at.BLOCKED, fields=["Název", "E-mail", "Doména", "IČO", "Důvod"])
-        return [
+        entries = [
             blocked_entry(f.get("Název"), f.get("E-mail"), f.get("Doména"), f.get("IČO"), f.get("Důvod"))
             for f in (r.get("fields", {}) for r in records)
         ]
+        self._cache = (time.monotonic(), entries)
+        return list(entries)
 
     def add(self, entry: dict[str, Any]) -> None:
         self.client.create_record(at.BLOCKED, {
             "Název": entry["name"] or None, "E-mail": entry["email"] or None, "Doména": entry["domain"] or None,
             "IČO": entry["ico"], "Důvod": entry["reason"] or None, "Přidáno": now_iso(),
         })
+        if self._cache:
+            self._cache[1].append(entry)
 
 
 @dataclass

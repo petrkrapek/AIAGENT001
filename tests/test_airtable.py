@@ -419,3 +419,21 @@ def test_blocklist_rows_are_normalized(http, client):
     blocklist.add(blocked_entry("Alfa", "Info@Alfa.cz", None, None, "odhlášení"))
     fields = fake.requests[1]["body"]["records"][0]["fields"]
     assert fields["E-mail"] == "info@alfa.cz" and fields["Doména"] is None and fields["Přidáno"]
+
+
+def test_blocklist_is_cached_briefly(http, client):
+    from aiagent.repos import AirtableBlocklist, blocked_entry
+    fake = http((200, {"records": [{"id": "rec1", "fields": {"Název": "Konkurence", "Doména": "konkurence.cz"}}]}),
+                (200, {"records": [{"id": "rec2", "fields": {}}]}),
+                (200, {"records": []}),
+                (200, {"records": []}))
+    blocklist = AirtableBlocklist(client)
+    assert len(blocklist.entries()) == 1
+    blocklist.add(blocked_entry("Alfa", "info@alfa.cz", None, None))
+    # Served from the cache, including the row this process just added.
+    assert [e["name"] for e in blocklist.entries()] == ["Konkurence", "Alfa"]
+    assert [r["method"] for r in fake.requests] == ["GET", "POST"]
+    blocklist.entries(fresh=True)  # before sending an e-mail: always the current table
+    with mock.patch("aiagent.repos.time.monotonic", return_value=10**9):
+        blocklist.entries()  # the cache expired
+    assert [r["method"] for r in fake.requests] == ["GET", "POST", "GET", "GET"]

@@ -55,8 +55,9 @@ def _check_service(service_id: str | None) -> None:
         raise ToolError("service_id je ID služby z tabulky Služby (začíná 'rec'), viz přehled služeb.")
 
 
-def check_not_blocked(blocklist: Any, email: str | None, website: str | None, ico: str | None) -> None:
-    entry = find_blocked(blocklist.entries(), email, website, ico)
+def check_not_blocked(blocklist: Any, email: str | None, website: str | None, ico: str | None,
+                      fresh: bool = False) -> None:
+    entry = find_blocked(blocklist.entries(fresh=fresh), email, website, ico)
     if entry:
         raise ToolError(
             f"Firma nebo kontakt je v tabulce Blokované kontakty ({describe_blocked(entry)}). "

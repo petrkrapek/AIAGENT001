@@ -157,7 +157,7 @@ class MemoryBlocklist:
         """What a person does in Airtable: values as typed, e.g. a URL in the Doména field."""
         self.rows.append({"name": name, "email": email, "domain": domain, "ico": ico, "reason": reason})
 
-    def entries(self) -> list[dict[str, Any]]:
+    def entries(self, fresh: bool = False) -> list[dict[str, Any]]:
         return [blocked_entry(r["name"], r["email"], r["domain"], r["ico"], r["reason"]) for r in self.rows]
 
     def add(self, entry: dict[str, Any]) -> None:

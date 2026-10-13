@@ -153,6 +153,15 @@ def test_tool_errors_are_reported_to_model(config):
     assert [r["is_error"] for r in results] == [True, True, True]
 
 
+def test_bug_inside_a_tool_is_not_reported_as_bad_parameters(config):
+    agent, client, _ = make_agent(config, [response("tool_use", tool_use("t1", "list_tasks", {})),
+                                           response("end_turn", text("Hotovo."))])
+    agent.registry.get("list_tasks").handler = lambda: len(None)  # TypeError inside the handler
+    agent.run("úkoly")
+    result = client.calls[1]["messages"][-1]["content"][0]
+    assert result["is_error"] and result["content"].startswith("Chyba při běhu nástroje: TypeError")
+
+
 def test_pause_turn_resumes(config):
     paused = response("pause_turn", NS(type="server_tool_use", name="web_search", input={"query": "x"}))
     agent, client, _ = make_agent(config, [paused, response("end_turn", text("Výsledek."))])

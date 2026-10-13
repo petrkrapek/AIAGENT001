@@ -17,8 +17,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..config import Config, ImapConfig, SmtpConfig
-from ..repos import describe_blocked, find_blocked, now_iso
+from ..repos import now_iso
 from . import Tool, ToolError, schema
+from .leads import check_not_blocked
 
 
 def open_smtp(smtp: SmtpConfig) -> smtplib.SMTP:
@@ -244,9 +245,7 @@ def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
             )
         if lead["status"] in ("do_not_contact", "not_interested") or repo.is_suppressed(address):
             raise ToolError("Tento kontakt si nepřeje být oslovován. E-mail neodeslán.")
-        blocked = find_blocked(blocklist.entries(), address, lead.get("website"), lead.get("ico"))
-        if blocked:
-            raise ToolError(f"Kontakt je v tabulce Blokované kontakty ({describe_blocked(blocked)}). E-mail neodeslán.")
+        check_not_blocked(blocklist, address, lead.get("website"), lead.get("ico"), fresh=True)
         if lead_id in sent_this_session:
             raise ToolError(f"Leadu {lead_id} už byl v tomto běhu e-mail odeslán. Neodesílej znovu.")
         if lead.get("sending_started"):

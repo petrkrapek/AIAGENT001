@@ -339,6 +339,14 @@ def test_opt_out_survives_deleting_the_lead(smtp_config, repos, fake_smtp):
     assert len(repos.blocklist.rows) == 1  # already covered by the company domain
 
 
+def test_send_checks_the_current_blocklist(smtp_config, repos, fake_smtp):
+    registry = build_registry(smtp_config, repos)
+    add_lead(registry)
+    with mock.patch.object(repos.blocklist, "entries", wraps=repos.blocklist.entries) as entries:
+        call(registry, "send_email", lead_id=rid(1), to="info@alfa.cz", subject="x", body="y")
+    entries.assert_called_once_with(fresh=True)
+
+
 def test_freemail_opt_out_blocks_only_that_address(registry, repos):
     add_lead(registry, company="Pekař", ico=None, website=None, email="pekar@seznam.cz", status="do_not_contact")
     assert repos.blocklist.entries()[0]["domain"] == ""
