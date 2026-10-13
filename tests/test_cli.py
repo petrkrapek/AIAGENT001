@@ -146,6 +146,19 @@ def test_chat_ends_on_ctrl_d_and_survives_api_errors(monkeypatch, capsys, config
     assert "Spojení s API selhalo" in out.err and "Konverzace vymazána." in out.out
 
 
+def test_broken_characters_in_input_dont_crash_the_chat(monkeypatch, capsys, config):
+    import json
+
+    from test_agent import response, text
+    # Backspace over "á" in a terminal that erases bytes leaves "\udcc3" (half of the character).
+    agent, client = chat_with(monkeypatch, config, ["Dobrý den, najdi firmy \udcc3", "/exit"],
+                              [response("end_turn", text("Dobře."))])
+    sent = client.calls[0]["messages"][0]["content"]
+    assert sent == "Dobrý den, najdi firmy \ufffd"
+    json.dumps(sent, ensure_ascii=False).encode("utf-8")  # what the SDK does; used to raise UnicodeEncodeError
+    assert cli.clean_input("bez chyby: žluťoučký") == "bez chyby: žluťoučký"
+
+
 def api_error(cls, status):
     response = mock.Mock(status_code=status, headers={"request-id": "req_1"}, request=mock.Mock())
     return cls("chyba", response=response, body=None)

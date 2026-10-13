@@ -63,6 +63,23 @@ def safe(text: str) -> str:
     return "".join("�" if ch != "\u200d" and unicodedata.category(ch) in _INVISIBLE else ch for ch in text)
 
 
+def clean_input(text: str) -> str:
+    """Replace bytes that aren't valid UTF-8 with U+FFFD.
+
+    Python keeps them as lone surrogates (e.g. Backspace over "á" in a terminal that erases bytes,
+    not characters, leaves half of it), and those can't be sent to the API.
+    """
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+def enable_line_editing() -> None:
+    """Use readline for input(): Backspace erases whole characters, arrows and history work."""
+    try:
+        import readline  # noqa: F401  (importing it is enough)
+    except ImportError:  # e.g. Windows
+        pass
+
+
 def err(text: str) -> None:
     print(red(text), file=sys.stderr)
 
@@ -147,6 +164,7 @@ HELP = """Příkazy:
 
 
 def chat(agent: Agent) -> None:
+    enable_line_editing()
     print(bold(f"AI obchodník {__version__}") + dim(f"  ·  model {agent.config.model}  ·  /help"))
     print(dim(f"Data: Airtable báze {agent.config.airtable_base_id}"))
     if agent.services:
@@ -166,7 +184,7 @@ def chat(agent: Agent) -> None:
     print(yellow(modes[mode]) if mode == "auto" else dim(modes[mode]))
     while True:
         try:
-            user_input = input(bold("\nvy › ")).strip()
+            user_input = clean_input(input(bold("\nvy › "))).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return
@@ -402,7 +420,7 @@ def _main(argv: list[str] | None) -> int:
         enable_research(agent)
 
     if task is not None:
-        return run_safely(agent, task.strip())
+        return run_safely(agent, clean_input(task).strip())
     chat(agent)
     return EXIT_OK
 
