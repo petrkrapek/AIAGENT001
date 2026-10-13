@@ -26,6 +26,8 @@ MAX_TOKENS = 64_000
 # A model call that fails mid-stream (dropped connection, overload) is retried this many times; the SDK
 # retries only errors that arrive before the stream starts. Safe: the history doesn't change meanwhile.
 STREAM_RETRIES = 2
+# Retries the SDK makes itself (overload, rate limit, 5xx before the stream starts); its default is 2.
+API_RETRIES = 4
 RETRY_DELAY = 5.0  # seconds, doubled with each attempt
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 THINKING_UPDATES_BETA = "thinking-display-updates-2026-08-18"
@@ -272,7 +274,7 @@ class Agent:
         self.config = config
         self.system_template = system_template
         self.registry = registry
-        self.client = client or anthropic.Anthropic()
+        self.client = client or anthropic.Anthropic(max_retries=API_RETRIES)
         self.approver = approver
         self.events = events or AgentEvents()
         self.show_thinking = show_thinking

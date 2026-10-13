@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -11,6 +13,7 @@ from ..config import Config
 from . import Tool, ToolError, schema, truncate
 
 BASE_URL = "https://ares.gov.cz/ekonomicke-subjekty-v-be/rest/ekonomicke-subjekty"
+RETRIES = 2  # after a rate limit, server error or dropped connection
 
 # Most common legal forms (ARES code -> name).
 LEGAL_FORMS = {
@@ -26,25 +29,40 @@ LEGAL_FORMS = {
 
 def _request(url: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request = urllib.request.Request(
-        url,
-        data=data,
-        method="POST" if payload is not None else "GET",
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
+    # Every call only reads (the search is a POST too), so transient failures are safe to repeat.
+    for attempt in range(RETRIES + 1):
+        last = attempt == RETRIES
+        request = urllib.request.Request(
+            url,
+            data=data,
+            method="POST" if payload is not None else "GET",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
         try:
-            detail = json.loads(exc.read().decode("utf-8")).get("popis", "")
-        except (ValueError, AttributeError):
-            detail = ""
-        if exc.code == 404:
-            raise ToolError("Subjekt v ARES nenalezen.") from exc
-        raise ToolError(f"ARES vrátil chybu {exc.code}. {detail}".strip()) from exc
-    except urllib.error.URLError as exc:
-        raise ToolError(f"ARES je nedostupný: {exc.reason}") from exc
+            with urllib.request.urlopen(request, timeout=30) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            if (exc.code == 429 or exc.code >= 500) and not last:
+                time.sleep(2 ** attempt)
+                continue
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("popis", "")
+            except (ValueError, AttributeError, OSError, http.client.HTTPException):
+                detail = ""
+            if exc.code == 404:
+                raise ToolError("Subjekt v ARES nenalezen.") from exc
+            raise ToolError(f"ARES vrátil chybu {exc.code}. {detail}".strip()) from exc
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            # Unreachable, timed out, or the connection dropped while reading the answer.
+            if not last:
+                time.sleep(2 ** attempt)
+                continue
+            raise ToolError(f"ARES je nedostupný: {getattr(exc, 'reason', exc)}") from exc
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except ValueError as exc:
+            raise ToolError("ARES vrátil neplatnou odpověď, zkuste to později.") from exc
+    raise ToolError("ARES neodpovídá.")  # pragma: no cover
 
 
 def _summary(subject: dict[str, Any]) -> str:

@@ -407,6 +407,49 @@ def test_ares_company_validates_ico(registry):
     assert req.call_args[0][0].endswith("/00000123")
 
 
+def _ares_reply(status, body=b'{"ico": "00000123", "obchodniJmeno": "X"}'):
+    import io
+    import urllib.error
+    if status >= 400:
+        return urllib.error.HTTPError("https://ares", status, "err", {}, io.BytesIO(body))
+    return mock.MagicMock(__enter__=lambda s: mock.MagicMock(read=lambda: body), __exit__=lambda *a: False)
+
+
+def test_ares_retries_transient_failures(registry):
+    import http.client
+    replies = [TimeoutError("read timed out"), _ares_reply(503), http.client.RemoteDisconnected("x"), _ares_reply(200)]
+    replies_left = list(replies)
+
+    def urlopen(request, timeout=None):
+        reply = replies_left.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    with mock.patch.object(ares.urllib.request, "urlopen", urlopen), mock.patch.object(ares.time, "sleep") as sleep:
+        with pytest.raises(ToolError, match="nedostupný"):  # three attempts, all failing
+            call(registry, "ares_company", ico="123")
+        assert sleep.call_count == 2
+        assert "IČO 00000123" in call(registry, "ares_company", ico="123")
+
+
+def test_ares_errors_become_tool_errors(registry):
+    def urlopen_with(reply):
+        return lambda request, timeout=None: reply
+
+    with mock.patch.object(ares.time, "sleep"):
+        with mock.patch.object(ares.urllib.request, "urlopen", urlopen_with(_ares_reply(200, b"<html>"))):
+            with pytest.raises(ToolError, match="neplatnou odpověď"):
+                call(registry, "ares_company", ico="123")
+        with mock.patch.object(ares.urllib.request, "urlopen", side_effect=_ares_reply(404, b"{}")):
+            with pytest.raises(ToolError, match="nenalezen"):
+                call(registry, "ares_company", ico="123")
+        bad_query = _ares_reply(400, '{"popis": "Chybný dotaz"}'.encode())
+        with mock.patch.object(ares.urllib.request, "urlopen", side_effect=bad_query):
+            with pytest.raises(ToolError, match="400. Chybný dotaz"):
+                call(registry, "ares_search", name="x")
+
+
 # --- system prompt ----------------------------------------------------------------
 
 def test_system_prompt_includes_profile(config):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import re
 import time
 import urllib.error
@@ -12,6 +13,8 @@ import urllib.request
 from typing import Any
 
 API_URL = "https://api.airtable.com/v0"
+
+log = logging.getLogger(__name__)
 
 
 class AirtableError(Exception):
@@ -58,9 +61,9 @@ class AirtableClient:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
-        # Only reads are safe to repeat after an ambiguous failure; a repeated POST/PATCH
-        # could create duplicates. A 429 means the request was not processed at all.
-        idempotent = method == "GET"
+        # Reads and updates (PATCH sets the same values again) are safe to repeat after an ambiguous
+        # failure; a repeated POST could create duplicates. A 429 means nothing was processed at all.
+        idempotent = method in ("GET", "PATCH", "DELETE")
         for attempt in range(self.MAX_RETRIES + 1):
             wait = self.MIN_INTERVAL - (time.monotonic() - self._last_request)
             if wait > 0:
@@ -74,6 +77,7 @@ class AirtableClient:
                     return json.loads(raw) if raw else {}
             except urllib.error.HTTPError as exc:
                 if exc.code == 429 and not last:
+                    log.warning("Airtable: překročen limit požadavků, čekám %s s.", self.RATE_LIMIT_WAIT)
                     time.sleep(self.RATE_LIMIT_WAIT)
                     continue
                 if exc.code >= 500 and idempotent and not last:
@@ -93,8 +97,8 @@ class AirtableClient:
     def _describe(exc: urllib.error.HTTPError) -> str:
         try:
             error = json.loads(exc.read().decode("utf-8")).get("error", {})
-        except (ValueError, AttributeError):
-            error = {}
+        except (ValueError, AttributeError, OSError, http.client.HTTPException):
+            error = {}  # no readable body: the status code alone explains the error
         if isinstance(error, dict):
             detail = error.get("message") or error.get("type") or ""
         else:

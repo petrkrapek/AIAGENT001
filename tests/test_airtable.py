@@ -159,6 +159,31 @@ def test_transport_errors_are_wrapped_and_reads_retried(client):
         assert calls == ["POST"]  # never repeated: it might have been stored already
 
 
+def test_updates_are_retried_but_creates_are_not(http, client):
+    fake = http((503, {}), (200, {"id": "recAAAAAAAAAAAAAA", "fields": {}}))
+    client.update_record("Leady", "recAAAAAAAAAAAAAA", {"Firma": "X"})
+    assert [r["method"] for r in fake.requests] == ["PATCH", "PATCH"]
+    fake = http((503, {}))
+    with pytest.raises(at.AirtableError, match="503"):
+        client.create_record("Leady", {"Firma": "X"})
+    assert len(fake.requests) == 1
+
+
+def test_unreadable_error_body_is_still_an_airtable_error(client):
+    import http.client
+
+    class Body(io.BytesIO):
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"")
+
+    def fail(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 401, "err", {}, Body())
+
+    with mock.patch("aiagent.airtable.urllib.request.urlopen", fail):
+        with pytest.raises(at.AirtableError, match="AIRTABLE_TOKEN"):
+            client.list_records("Leady")
+
+
 def test_rate_limit_waits_30_seconds_also_for_writes(http, client):
     fake = http((429, {}), (200, {"records": [{"id": "recAAAAAAAAAAAAAA", "fields": {}}]}))
     with mock.patch("aiagent.airtable.time.sleep") as sleep:
