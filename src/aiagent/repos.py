@@ -10,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -210,7 +210,7 @@ class AirtableLeads:
         except at.AirtableError as exc:
             raise _not_found(exc, f"Lead {lead_id}") from exc
 
-    def find_duplicate(self, ico: str | None, email: str | None, website: str | None):
+    def find_duplicate(self, ico: str | None, email: str | None, website: str | None) -> dict[str, Any] | None:
         clauses = []
         normalized_ico = normalize_ico(ico)
         if normalized_ico:
@@ -407,7 +407,7 @@ def describe_blocked(entry: dict[str, Any]) -> str:
     return f"{label}: {entry['reason']}" if entry["reason"] else label
 
 
-def block_lead(blocklist: Any, lead: dict[str, Any], entries: list[dict[str, Any]] | None = None) -> bool:
+def block_lead(blocklist: Blocklist, lead: dict[str, Any], entries: list[dict[str, Any]] | None = None) -> bool:
     """Copy an opted-out lead to the blocklist unless it's already covered; True if a row was added."""
     entries = blocklist.entries() if entries is None else entries
     if find_blocked(entries, lead.get("email"), lead.get("website"), lead.get("ico")):
@@ -422,7 +422,7 @@ def block_lead(blocklist: Any, lead: dict[str, Any], entries: list[dict[str, Any
     return True
 
 
-def sync_blocklist(leads: Any, blocklist: Any) -> int:
+def sync_blocklist(leads: LeadRepo, blocklist: Blocklist) -> int:
     """Copy do_not_contact leads (also ones set by hand in Airtable) to the blocklist; returns the count."""
     entries = blocklist.entries()
     return sum(block_lead(blocklist, lead, entries) for lead in leads.search(status="do_not_contact"))
@@ -458,14 +458,62 @@ class AirtableBlocklist:
             self._cache[1].append(entry)
 
 
+# --- interfaces ----------------------------------------------------------------------------
+# What the tools and the agent need from storage. The Airtable classes above implement them, and
+# so do the in-memory doubles in tests/memory_repos.py (tests/test_repos_protocols.py checks it).
+
+
+@runtime_checkable
+class LeadRepo(Protocol):
+    def create(self, lead: dict[str, Any]) -> dict[str, Any]: ...
+    def get(self, lead_id: str) -> dict[str, Any]: ...
+    def update(self, lead_id: str, changes: dict[str, Any]) -> dict[str, Any]: ...
+    def find_duplicate(self, ico: str | None, email: str | None, website: str | None) -> dict[str, Any] | None: ...
+    def is_suppressed(self, email: str) -> bool: ...
+    def search(self, status: str | None = None, query: str | None = None,
+               limit: int | None = None) -> list[dict[str, Any]]: ...
+    def status_counts(self) -> dict[str, int]: ...
+    def add_email(self, lead_id: str, to: str, subject: str, body: str, sent_at: str) -> None: ...
+    def emails(self, lead_id: str) -> list[dict[str, Any]]: ...
+    def sent_count(self, day: str) -> int: ...
+
+
+@runtime_checkable
+class TaskRepo(Protocol):
+    def create(self, title: str, due: str | None, notes: str | None) -> dict[str, Any]: ...
+    def list(self, status: str | None = None) -> list[dict[str, Any]]: ...
+    def update(self, task_id: str, changes: dict[str, Any]) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class AuditLog(Protocol):
+    def log(self, tool: str, tool_input: dict[str, Any], approved: bool | None, is_error: bool) -> None: ...
+
+
+@runtime_checkable
+class ServiceRepo(Protocol):
+    def list_active(self) -> list[dict[str, Any]]: ...
+
+
+@runtime_checkable
+class ProfileRepo(Protocol):
+    def load(self) -> str | None: ...
+
+
+@runtime_checkable
+class Blocklist(Protocol):
+    def entries(self, fresh: bool = False) -> list[dict[str, Any]]: ...
+    def add(self, entry: dict[str, Any]) -> None: ...
+
+
 @dataclass
 class Repos:
-    leads: Any
-    tasks: Any
-    audit: Any
-    services: Any
-    profile: Any
-    blocklist: Any
+    leads: LeadRepo
+    tasks: TaskRepo
+    audit: AuditLog
+    services: ServiceRepo
+    profile: ProfileRepo
+    blocklist: Blocklist
 
 
 def airtable_repos(client: at.AirtableClient, tz: str) -> Repos:

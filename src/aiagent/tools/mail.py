@@ -13,11 +13,10 @@ from datetime import datetime
 from email import policy
 from email.message import EmailMessage
 from email.utils import formatdate, getaddresses, make_msgid, parseaddr
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..config import Config, ImapConfig, SmtpConfig
-from ..repos import now_iso
+from ..repos import Blocklist, LeadRepo, now_iso
 from . import Tool, ToolError, schema
 from .leads import check_not_blocked
 
@@ -210,7 +209,7 @@ def single_address(value: str) -> str:
     return pairs[0][1].strip().lower()
 
 
-def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
+def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
     smtp = config.smtp
     assert smtp is not None
     auto = config.send_mode == "auto"

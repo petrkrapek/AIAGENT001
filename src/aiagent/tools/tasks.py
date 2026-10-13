@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..config import Config
 from . import Tool, ToolError, schema
+
+if TYPE_CHECKING:
+    from ..repos import TaskRepo
 
 STATUSES = ("todo", "in_progress", "done", "cancelled")
 
@@ -19,7 +22,7 @@ def _format(task: dict[str, Any]) -> str:
     return line
 
 
-def build(config: Config, repo: Any) -> list[Tool]:
+def build(config: Config, repo: TaskRepo) -> list[Tool]:
     def add_task(title: str, due: str | None = None, notes: str | None = None) -> str:
         return f"Přidán úkol {_format(repo.create(title, due, notes))}"
 

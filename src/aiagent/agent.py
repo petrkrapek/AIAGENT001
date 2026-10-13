@@ -6,7 +6,7 @@ import inspect
 import logging
 import time
 from collections.abc import Callable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import anthropic
 import httpx2
@@ -19,6 +19,9 @@ from anthropic.types.beta import (
 
 from .config import Config
 from .tools import ToolError, ToolRegistry
+
+if TYPE_CHECKING:
+    from .repos import AuditLog
 
 log = logging.getLogger("aiagent")
 
@@ -267,7 +270,7 @@ class Agent:
         approver: Approver = deny_all,
         events: AgentEvents | None = None,
         show_thinking: bool = False,
-        audit: Any = None,
+        audit: AuditLog | None = None,
         load_services: Callable[[], list[dict[str, Any]]] | None = None,
         load_profile: Callable[[], str | None] | None = None,
         system_template: str = SYSTEM_PROMPT,

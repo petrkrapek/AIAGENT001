@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import Config
-from ..repos import block_lead, describe_blocked, find_blocked, now_iso
+from ..repos import Blocklist, LeadRepo, block_lead, describe_blocked, find_blocked, now_iso
 from . import Tool, ToolError, schema, truncate
 
 STATUSES = (
@@ -55,7 +55,7 @@ def _check_service(service_id: str | None) -> None:
         raise ToolError("service_id je ID služby z tabulky Služby (začíná 'rec'), viz přehled služeb.")
 
 
-def check_not_blocked(blocklist: Any, email: str | None, website: str | None, ico: str | None,
+def check_not_blocked(blocklist: Blocklist, email: str | None, website: str | None, ico: str | None,
                       fresh: bool = False) -> None:
     entry = find_blocked(blocklist.entries(fresh=fresh), email, website, ico)
     if entry:
@@ -65,7 +65,7 @@ def check_not_blocked(blocklist: Any, email: str | None, website: str | None, ic
         )
 
 
-def build(config: Config, repo: Any, blocklist: Any) -> list[Tool]:
+def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
     def record_opt_out(lead: dict[str, Any]) -> str:
         """Copy an opt-out to the blocklist, so it survives deleting the lead in Airtable."""
         try:
