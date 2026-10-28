@@ -116,6 +116,24 @@ def test_send_refuses_second_contact_without_follow_up(smtp_config, repos, fake_
     assert fake_smtp.send_message.call_count == 2
 
 
+def test_lead_marked_contacted_by_hand_is_not_emailed_again(smtp_config, repos, fake_smtp):
+    # A person recovering from an unconfirmed send sets Osloven and leaves the date (and the draft) as is.
+    for n, status in enumerate(("contacted", "replied", "interested"), start=1):
+        repos.leads.create({"company": f"Firma {n}", "email": f"info@firma{n}.cz", "status": status})
+        repos.leads.update(rid(n), {"draft": {"subject": "A", "body": "x"}})
+        repos.leads.approve_draft(rid(n))
+        for mode in ("approve", "auto"):
+            smtp_config.send_mode = mode
+            registry = build_registry(smtp_config, repos)
+            with pytest.raises(ToolError, match=f"už byl osloven \\(stav {status}\\)"):
+                call(registry, "send_email", lead_id=rid(n), to=f"info@firma{n}.cz", subject="A", body="x")
+    fake_smtp.send_message.assert_not_called()
+    # Only an explicit follow-up, which needs approval in the terminal.
+    smtp_config.send_mode = "approve"
+    call(build_registry(smtp_config, repos), "send_email", lead_id=rid(1), to="info@firma1.cz",
+         subject="B", body="x", follow_up=True)
+    assert fake_smtp.send_message.call_count == 1
+
 def test_send_refuses_do_not_contact(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)
     add_lead(registry, status="do_not_contact")
@@ -338,6 +356,29 @@ def test_opt_out_survives_deleting_the_lead(smtp_config, repos, fake_smtp):
     call(registry, "update_lead", id=rid(2), status="do_not_contact")
     assert len(repos.blocklist.rows) == 1  # already covered by the company domain
 
+
+def test_update_lead_refuses_blocked_contacts(registry, repos):
+    repos.blocklist.block(name="Konkurence", domain="konkurence.cz", reason="konkurent")
+    repos.blocklist.block(name="Zákazník", ico="22222222")
+    add_lead(registry)
+    for change in ({"email": "ceo@konkurence.cz", "email_source": "https://konkurence.cz"},
+                   {"website": "https://eshop.konkurence.cz"}, {"ico": "222 22 222"}):
+        with pytest.raises(ToolError, match="Blokované kontakty"):
+            call(registry, "update_lead", id=rid(1), **change)
+    lead = repos.leads.get(rid(1))
+    assert (lead["email"], lead["website"], lead["ico"]) == ("info@alfa.cz", "https://www.alfa.cz", "11111111")
+    assert "Upraveno" in call(registry, "update_lead", id=rid(1), notes="Konkurence je jinde.")
+
+
+def test_new_address_of_an_opted_out_lead_is_blocked_at_once(registry, repos):
+    add_lead(registry)
+    call(registry, "update_lead", id=rid(1), status="do_not_contact")
+    # The company's IČO is already blocked; the new mailbox elsewhere must get its own row.
+    call(registry, "update_lead", id=rid(1), email="jan.novak@gmail.com", email_source="https://www.alfa.cz/tym")
+    assert [r["email"] for r in repos.blocklist.rows] == ["info@alfa.cz", "jan.novak@gmail.com"]
+    del repos.leads.leads[rid(1)]  # someone deletes the row in Airtable before the next start
+    with pytest.raises(ToolError, match="Blokované kontakty"):
+        add_lead(registry, company="Jan Novák", ico=None, website=None, email="jan.novak@gmail.com")
 
 def test_send_checks_the_current_blocklist(smtp_config, repos, fake_smtp):
     registry = build_registry(smtp_config, repos)

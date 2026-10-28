@@ -410,10 +410,12 @@ def describe_blocked(entry: dict[str, Any]) -> str:
 def block_lead(blocklist: Blocklist, lead: dict[str, Any], entries: list[dict[str, Any]] | None = None) -> bool:
     """Copy an opted-out lead to the blocklist unless it's already covered; True if a row was added."""
     entries = blocklist.entries() if entries is None else entries
-    if find_blocked(entries, lead.get("email"), lead.get("website"), lead.get("ico")):
-        return False
-    entry = blocked_entry(lead.get("company"), lead.get("email"),
-                          company_domain(lead.get("website"), lead.get("email")), lead.get("ico"),
+    # Each identifier on its own: a row matching the IČO must not hide a new address set on the lead
+    # later, which would stay unblocked once the lead is deleted.
+    email = None if find_blocked(entries, email=lead.get("email")) else lead.get("email")
+    website = None if find_blocked(entries, website=lead.get("website")) else lead.get("website")
+    ico = None if find_blocked(entries, ico=lead.get("ico")) else lead.get("ico")
+    entry = blocked_entry(lead.get("company"), email, company_domain(website, email), ico,
                           f"Stav Nekontaktovat (lead {lead['id']})")
     if not (entry["email"] or entry["domain"] or entry["ico"]):
         return False  # nothing a row could ever match; it would only be added again on every start

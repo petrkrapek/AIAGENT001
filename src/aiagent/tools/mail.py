@@ -47,6 +47,9 @@ class DeliveryError(ToolError):
         self.maybe_sent = maybe_sent
 
 
+# Lead statuses that mean the company has already received an e-mail from us.
+CONTACTED = ("contacted", "replied", "interested")
+
 # The server explicitly refused the message: it was certainly not sent.
 REJECTED = (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError)
 
@@ -253,9 +256,11 @@ def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
                 "takže e-mail mohl odejít. Neodesílej ho. Uživatel musí zkontrolovat složku Odeslané a pak "
                 "v Airtable vymazat pole Odesílání zahájeno (případně nastavit stav Osloven)."
             )
-        if lead.get("last_contacted") and not follow_up:
+        # The status counts too: a person who marks a lead Osloven by hand may leave the date empty.
+        if (lead.get("last_contacted") or lead["status"] in CONTACTED) and not follow_up:
+            when = lead.get("last_contacted") or f"(stav {lead['status']})"
             raise ToolError(
-                f"Lead {lead_id} už byl osloven {lead['last_contacted']}. "
+                f"Lead {lead_id} už byl osloven {when}. "
                 "Další zprávu pošli jen jako follow_up=true, pokud o to uživatel výslovně požádá."
             )
         if auto:

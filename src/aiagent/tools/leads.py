@@ -132,7 +132,8 @@ def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
             raise ToolError(f"Nelze měnit: {', '.join(sorted(unknown))}.")
         if "status" in changes and changes["status"] not in STATUSES:
             raise ToolError(f"Neplatný stav '{changes['status']}'.")
-        current = repo.get(id) if "status" in changes or "email" in changes else None
+        identifiers = {"email", "website", "ico"} & changes.keys()
+        current = repo.get(id) if "status" in changes or identifiers else None
         if current and changes.get("status", "do_not_contact") != "do_not_contact" and \
                 current["status"] == "do_not_contact":
             # An opt-out is final for the agent; only a person can lift it, in Airtable.
@@ -140,6 +141,10 @@ def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
         _check_service(changes.get("service_id"))
         if current and changes.get("email") and not (changes.get("email_source") or current.get("email_source")):
             raise ToolError("U e-mailu uveď email_source (URL stránky, kde je zveřejněný).")
+        status = changes.get("status", current["status"] if current else None)
+        if identifiers and status != "do_not_contact":
+            # The same rule as save_lead: a blocked address, website or IČO never gets onto a lead.
+            check_not_blocked(blocklist, changes.get("email"), changes.get("website"), changes.get("ico"))
         note = ""
         draft = current.get("draft") if current and "email" in changes else None
         if current and draft and draft.get("approved") and \
@@ -149,7 +154,9 @@ def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
             changes["draft"] = {"subject": draft["subject"], "body": draft["body"], "updated_at": now_iso()}
             note = " Adresa se změnila, návrh e-mailu proto znovu čeká na schválení uživatelem v Airtable."
         lead = repo.update(id, changes)
-        warning = record_opt_out(lead) if changes.get("status") == "do_not_contact" else ""
+        # Also a new address, website or IČO of an opted-out lead goes to the blocklist right away.
+        opted_out = lead["status"] == "do_not_contact" and ("status" in changes or identifiers)
+        warning = record_opt_out(lead) if opted_out else ""
         return f"Upraveno: {format_lead(lead)}{note}{warning}"
 
     def save_draft(id: str, subject: str, body: str, service_id: str | None = None) -> str:
