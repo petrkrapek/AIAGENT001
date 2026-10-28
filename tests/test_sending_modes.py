@@ -94,6 +94,25 @@ def test_new_draft_resets_approval(config, repos):
     assert repos.leads.get("rec00000000000001")["draft"]["approved"] is False
 
 
+def test_changing_the_address_resets_the_approval(config, repos):
+    registry = build_registry(smtp_config(config, "auto"), repos)
+    lead_id = "rec00000000000001"
+    registry.get("save_lead").handler(company="Alfa", email="info@alfa.cz", email_source="https://alfa.cz")
+    registry.get("save_draft").handler(id=lead_id, subject="S", body="B")
+    repos.leads.approve_draft(lead_id)
+    # Same address in another spelling, or other fields: the approval stays.
+    registry.get("update_lead").handler(id=lead_id, email=" INFO@alfa.cz", notes="x")
+    assert repos.leads.get(lead_id)["draft"]["approved"] is True
+    # The approval was for info@alfa.cz; an injected page must not redirect the approved e-mail.
+    out = registry.get("update_lead").handler(id=lead_id, email="jinam@example.com",
+                                              email_source="https://example.com")
+    assert "znovu čeká na schválení" in out
+    draft = repos.leads.get(lead_id)["draft"]
+    assert draft["approved"] is False and (draft["subject"], draft["body"]) == ("S", "B")
+    with mock.patch("aiagent.tools.mail.smtplib.SMTP") as smtp_cls, pytest.raises(ToolError, match="schválil"):
+        registry.get("send_email").handler(lead_id=lead_id, to="jinam@example.com", subject="S", body="B")
+    smtp_cls.assert_not_called()
+
 def test_yes_flag_does_not_approve_emails(capsys):
     from aiagent.cli import auto_approver
     approve = auto_approver(("hook.eu1.make.com",))

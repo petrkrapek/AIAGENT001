@@ -57,7 +57,7 @@ Agent používá ve vaší bázi sedm tabulek. Vytvoří je sám příkazem `aia
 
 Stavy leadu: Nový → Kvalifikovaný → Návrh připraven → Osloven → Odpověděl / Má zájem / Nemá zájem / **Nekontaktovat**. Stav můžete měnit i ručně v Airtable. Když nastavíte „Nekontaktovat“, agent kontakt (i celou jeho doménu) už nikdy neosloví a sám tento stav zrušit nemůže, to jde jen ručně v Airtable. Kontakt si zároveň zapíše do tabulky Blokované kontakty (ručně nastavené stavy převezme při dalším spuštění), takže blokace platí, i když lead smažete. Stav, který agent nezná (třeba vlastní nebo přejmenovaný), bere z opatrnosti jako „Nekontaktovat“.
 
-**Schválení návrhu:** když agent uloží nebo změní návrh e-mailu, nastaví pole *Schválení návrhu* na „Čeká na schválení“. Návrh si v Airtable přečtěte, případně upravte, a přepněte na „Schváleno“. Toto pole agent nikdy nenastavuje sám. V režimu `auto` odešle jen takto schválené návrhy, beze změny textu.
+**Schválení návrhu:** když agent uloží nebo změní návrh e-mailu (nebo u leadu se schváleným návrhem změní e-mailovou adresu), nastaví pole *Schválení návrhu* na „Čeká na schválení“. Návrh si v Airtable přečtěte, případně upravte, a přepněte na „Schváleno“. Toto pole agent nikdy nenastavuje sám. V režimu `auto` odešle jen takto schválené návrhy, beze změny textu.
 
 ### Tabulka Profil firmy
 

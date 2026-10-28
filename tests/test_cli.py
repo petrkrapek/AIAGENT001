@@ -41,6 +41,20 @@ def test_missing_task_file(monkeypatch, capsys):
     assert "nelze přečíst" in capsys.readouterr().err
 
 
+def test_task_file_not_in_utf8(monkeypatch, capsys, tmp_path):
+    set_env(monkeypatch, **AIRTABLE)
+    (tmp_path / "zadani.txt").write_bytes("Najdi firmy v Brně".encode("cp1250"))
+    assert cli.main(["run", "-f", "zadani.txt"]) == cli.EXIT_CONFIG
+    assert "UTF-8" in capsys.readouterr().err
+
+
+def test_company_name_from_research_cannot_send_escape_sequences(capsys):
+    from aiagent.research import NestedEvents
+    events = NestedEvents(cli.ConsoleEvents(), "Alfa\x1b[2J")
+    events.on_tool_call("save_lead", {"company": "Alfa"})
+    events.on_server_tool("web_fetch", {"url": "https://alfa.cz"})
+    assert "\x1b" not in capsys.readouterr().out
+
 def test_airtable_check_failure(monkeypatch, capsys):
     set_env(monkeypatch, **AIRTABLE)
     with mock.patch.object(cli.AirtableClient, "list_records",

@@ -132,16 +132,25 @@ def build(config: Config, repo: LeadRepo, blocklist: Blocklist) -> list[Tool]:
             raise ToolError(f"Nelze měnit: {', '.join(sorted(unknown))}.")
         if "status" in changes and changes["status"] not in STATUSES:
             raise ToolError(f"Neplatný stav '{changes['status']}'.")
-        if changes.get("status", "do_not_contact") != "do_not_contact" and \
-                repo.get(id)["status"] == "do_not_contact":
+        current = repo.get(id) if "status" in changes or "email" in changes else None
+        if current and changes.get("status", "do_not_contact") != "do_not_contact" and \
+                current["status"] == "do_not_contact":
             # An opt-out is final for the agent; only a person can lift it, in Airtable.
             raise ToolError("Kontakt je označen jako do_not_contact; změnit to může jen uživatel v Airtable.")
         _check_service(changes.get("service_id"))
-        if changes.get("email") and not (changes.get("email_source") or repo.get(id).get("email_source")):
+        if current and changes.get("email") and not (changes.get("email_source") or current.get("email_source")):
             raise ToolError("U e-mailu uveď email_source (URL stránky, kde je zveřejněný).")
+        note = ""
+        draft = current.get("draft") if current and "email" in changes else None
+        if current and draft and draft.get("approved") and \
+                str(changes["email"]).strip().lower() != (current.get("email") or "").strip().lower():
+            # A person approved the draft for the old address; the auto send mode must not reuse
+            # that approval for a recipient nobody has seen.
+            changes["draft"] = {"subject": draft["subject"], "body": draft["body"], "updated_at": now_iso()}
+            note = " Adresa se změnila, návrh e-mailu proto znovu čeká na schválení uživatelem v Airtable."
         lead = repo.update(id, changes)
         warning = record_opt_out(lead) if changes.get("status") == "do_not_contact" else ""
-        return f"Upraveno: {format_lead(lead)}{warning}"
+        return f"Upraveno: {format_lead(lead)}{note}{warning}"
 
     def save_draft(id: str, subject: str, body: str, service_id: str | None = None) -> str:
         _check_service(service_id)

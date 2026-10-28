@@ -98,14 +98,15 @@ class ConsoleEvents(AgentEvents):
         print(dim(f"💭 {safe(text)}"))
 
     def on_tool_call(self, name: str, tool_input: dict[str, Any]) -> None:
-        print(dim(f"→ {name} {_short(tool_input)}"))
+        # The name carries the company from research_company ("[Alfa] save_lead"), which the model chose.
+        print(dim(f"→ {safe(name)} {_short(tool_input)}"))
 
     def on_tool_result(self, name: str, result: str, is_error: bool) -> None:
         line = f"  ← {_short(result, 200)}"
         print(red(line) if is_error else dim(line))
 
     def on_server_tool(self, name: str, tool_input: Any) -> None:
-        print(dim(f"→ {name} {_short(tool_input)}"))
+        print(dim(f"→ {safe(name)} {_short(tool_input)}"))
 
     def on_notice(self, text: str) -> None:
         print(yellow(f"! {safe(text)}"))
@@ -329,11 +330,14 @@ def setup_logging() -> None:
 def read_task(args: argparse.Namespace) -> str | None:
     if not args.file:
         return args.task
-    if args.file == "-":
-        return sys.stdin.read()
     try:
+        if args.file == "-":
+            return sys.stdin.read()
         with open(args.file, encoding="utf-8") as fh:
             return fh.read()
+    except UnicodeDecodeError:
+        err("Zadání musí být v kódování UTF-8 (soubor je nejspíš uložený jako Windows-1250). Uložte ho jako UTF-8.")
+        return None
     except OSError as exc:
         err(f"Soubor se zadáním nelze přečíst: {exc}")
         return None
