@@ -17,7 +17,7 @@ classifiers = [
 ]
 # Upper bounds: a new major SDK version may change the API this agent relies on.
 dependencies = [
-    "anthropic>=1.13,<2",
+    "anthropic>=1.13,<3",
     # The SDK's HTTP client; the agent catches its transport errors from a dropped stream.
     "httpx2>=2,<3",
     "python-dotenv>=1.0,<2",
